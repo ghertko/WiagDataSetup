@@ -69,6 +69,8 @@ function fillera(tblera::AbstractString,
         error("There is no valid database connection. Use `setDBWIAG'.")
     end
 
+    msg = 1000
+
     DBInterface.execute(dbwiag, "DELETE FROM " * tblera);
 
     if datereference
@@ -86,8 +88,8 @@ function fillera(tblera::AbstractString,
     # get office data
     sqlselect = "SELECT " * colnameidinoffice * ", date_start, date_end " * " FROM " * tbloffice
     dfoffice = DBInterface.execute(dbwiag, sqlselect) |> DataFrame
-
-    csqlvalues = String[]
+    
+    insstmt = DBInterface.prepare(dbwiag, "INSERT INTO " * tblera * " VALUES (?, ?, ?)")
     for row in eachrow(dfperson)
         erastart = Inf
         eraend = -Inf
@@ -156,24 +158,22 @@ function fillera(tblera::AbstractString,
             eraend = erastart
         end
 
-        sqlerastart = erastart == Inf ? "NULL" : "'" * string(erastart) * "'"
-        sqleraend = eraend == -Inf ? "NULL" : "'" * string(eraend) * "'"
+        if erastart == Inf
+            erastart = missing
+        end
+        if eraend == -Inf
+            eraend = missing
+        end        
 
-        # if !ismissing(erastartdb) && !(typeof(erastartdb) == Int)
-        #     println("start: ", erastartdb)
-        # end
-        # if !ismissing(eraenddb) && !(typeof(eraenddb) == Int)
-        #     println("end: ", eraenddb)
-        # end
-
-        push!(csqlvalues, "('" * string(idperson) * "', " * sqlerastart * ", " * sqleraend * ")")
+        # it is a bit slower to do call the database in each step, but needs less code
+        DBInterface.execute(insstmt, [idperson, erastart, eraend]);
         tblid += 1
+        if tblid % msg == 0
+            @info tblid
+        end        
     end
 
-    sqlvalues = join(csqlvalues, ", ")
-    DBInterface.execute(dbwiag, "INSERT INTO " * tblera * " VALUES " * sqlvalues)
-
-    # println(sqlvalues);
+    DBInterface.close!(insstmt)
 
     return tblid
 end
@@ -192,11 +192,16 @@ function fillofficedate(tblofficedate::AbstractString,
         setDBWIAG()
     end
 
+    msg = 1000
+
     sql = "SELECT " * colnameid * ", date_start, date_end FROM " * tbloffice
     dfoffice = DBInterface.execute(dbwiag, sql) |> DataFrame;
 
-    csqlvalues = String[]
     tblid = 0;
+    DBInterface.execute(dbwiag, "DELETE FROM " * tblofficedate);
+
+    insstmt = DBInterface.prepare(dbwiag, "INSERT INTO " * tblofficedate * " VALUES (?, ?, ?)")
+    
     for row in eachrow(dfoffice)
         id, date_start, date_end = row
 
@@ -205,17 +210,20 @@ function fillofficedate(tblofficedate::AbstractString,
         if ismissing(numdate_end)
             numdate_end = parsemaybe(date_start, :upper)
         end        
-
-        push!(csqlvalues, "(" * id * ", " * numdate_start * ", " * numdate_end * ")")
-
+        
+        # push!(csqlvalues, "(" * id * ", " * numdate_start * ", " * numdate_end * ")")
+        da = [id, numdate_start, numdate_end]
+        DBInterface.execute(insstmt, da)
         tblid += 1
+        if tblid % msg == 0
+            @info tblid
+        end
         # if tblid > 25 break end
     end
 
-    DBInterface.execute(dbwiag, "DELETE FROM " * tblofficedate);
-
-    sqlvalues = join(csqlvalues, ", ")
-    DBInterface.execute(dbwiag, "INSERT INTO " * tblofficedate * " VALUES " * sqlvalues)
+    DBInterface.close!(insstmt)
+    #sqlvalues = join(csqlvalues, ", ")
+    #DBInterface.execute(dbwiag, "INSERT INTO " * tblofficedate * " VALUES " * sqlvalues)
 
     return tblid
 end
