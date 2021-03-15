@@ -229,24 +229,29 @@ function fillofficedate(tblofficedate::AbstractString,
 end
 
 """
-    fillnamelookup(tablename::AbstractString)::Int
+    fillnamelookup(tb::AbstractString)::Int
 
 Fill `tablename` with combinations of givenname and familyname and their variants.
 """
 function fillnamelookup(tbllookup::AbstractString,
                         tblperson::AbstractString,
-                        colnameid::AbstractString = "id")::Int
+                        colnameid::AbstractString = "id";
+                        checkisready = false)::Int
     msg = 200
     if isnothing(dbwiag)
         error("There is no valid database connection. Use `setDBWIAG'.")
     end
 
-    DBInterface.execute(dbwiag, "DELETE FROM " * tbllookup);
+    DBInterface.execute(dbwiag, "DELETE FROM " * tbllookup)
+    
+    sql = "SELECT " * colnameid * " as id_person, " *
+        "givenname, prefix_name, familyname, givenname_variant, familyname_variant " *
+        "FROM " * tblperson * " person " *
+        (checkisready ? "WHERE isready = 1 " : "")
+    @infiltrate
 
-    dfperson = DBInterface.execute(dbwiag,
-                                   "SELECT " * colnameid * " as id_person, " *
-                                   "givenname, prefix_name, familyname, givenname_variant, familyname_variant " *
-                                   "FROM " * tblperson * " person") |> DataFrame;
+
+    dfperson = DBInterface.execute(dbwiag, sql) |> DataFrame
 
     # SQL
     # INSERT INTO dsttable VALUES (NULL, 'id_person1', 'givenname1', 'prefix_name1', 'familyname1'),
@@ -381,8 +386,8 @@ const rgxlatecentury = Regex("spätes " * rgpcentury, "i")
 
 # around, ...
 const rgpmonth = "(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|Jan\\.|Feb\\.|Mrz\\.|Apr\\.|Jun\\.|Jul\\.|Aug\\.|Sep\\.|Okt\\.|Nov\\.|Dez\\.)"
-const rgxbefore = Regex("(vor|bis|spätestens) " * rgpmonth * "? ?" * rgpyear, "i")
-const rgxaround = Regex("(um|ca\\.|wahrscheinlich) " * rgpyear, "i")
+const rgxbefore = Regex("(vor|bis|spätestens|spät\\.|v\\.) " * rgpmonth * "? ?" * rgpyear, "i")
+const rgxaround = Regex("(um|ca\\.|wahrscheinlich|wohl|etwa|evtl\\.) " * rgpyear, "i")
 const rgxafter = Regex("(nach|frühestens|seit) " * rgpyear, "i")
 
 const rgxcentury = Regex("^ *" * rgpcentury)
