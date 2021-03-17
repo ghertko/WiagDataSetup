@@ -248,8 +248,6 @@ function fillnamelookup(tbllookup::AbstractString,
         "givenname, prefix_name, familyname, givenname_variant, familyname_variant " *
         "FROM " * tblperson * " person " *
         (checkisready ? "WHERE isready = 1 " : "")
-    @infiltrate
-
 
     dfperson = DBInterface.execute(dbwiag, sql) |> DataFrame
 
@@ -391,8 +389,8 @@ const rgxaround = Regex("(um|ca\\.|wahrscheinlich|wohl|etwa|evtl\\.) " * rgpyear
 const rgxafter = Regex("(nach|frühestens|seit) " * rgpyear, "i")
 
 const rgxcentury = Regex("^ *" * rgpcentury)
-const rgxyear = Regex("^ *" * rgpyear)
-const rgxyearfc = Regex("^ *" * rgpyearfc)
+const rgxyear = Regex("^( *|erwählt *)" * rgpyear)
+const rgxyearfc = Regex("^( *|erwählt *)" * rgpyearfc)
 
 """
     parsemaybe(s, Symbol::dir)
@@ -540,16 +538,16 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
 
     # plain year
     rgm = match(rgxyear, s)
-    if !isnothing(rgm) && !isnothing(rgm[1])
-        year = parse(Int, rgm[1])
+    if !isnothing(rgm) && !isnothing(rgm[2])
+        year = parse(Int, rgm[2])
         return year
     end
 
     # first century
     rgm = match(rgxyearfc, s)
-    if !isnothing(rgm) && !isnothing(rgm[1])
+    if !isnothing(rgm) && !isnothing(rgm[2])
         @info "First century date " s
-        year = parse(Int, rgm[1])
+        year = parse(Int, rgm[2])
         return year
     end
     
