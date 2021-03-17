@@ -69,6 +69,8 @@ function fillera(tblera::AbstractString,
         error("There is no valid database connection. Use `setDBWIAG'.")
     end
 
+    msg = 1000
+    
     DBInterface.execute(dbwiag, "DELETE FROM " * tblera);
 
     if datereference
@@ -86,8 +88,8 @@ function fillera(tblera::AbstractString,
     # get office data
     sqlselect = "SELECT " * colnameidinoffice * ", date_start, date_end " * " FROM " * tbloffice
     dfoffice = DBInterface.execute(dbwiag, sqlselect) |> DataFrame
-
-    csqlvalues = String[]
+    
+    insstmt = DBInterface.prepare(dbwiag, "INSERT INTO " * tblera * " VALUES (?, ?, ?)")
     for row in eachrow(dfperson)
         erastart = Inf
         eraend = -Inf
@@ -156,24 +158,22 @@ function fillera(tblera::AbstractString,
             eraend = erastart
         end
 
-        sqlerastart = erastart == Inf ? "NULL" : "'" * string(erastart) * "'"
-        sqleraend = eraend == -Inf ? "NULL" : "'" * string(eraend) * "'"
+        if erastart == Inf
+            erastart = missing
+        end
+        if eraend == -Inf
+            eraend = missing
+        end        
 
-        # if !ismissing(erastartdb) && !(typeof(erastartdb) == Int)
-        #     println("start: ", erastartdb)
-        # end
-        # if !ismissing(eraenddb) && !(typeof(eraenddb) == Int)
-        #     println("end: ", eraenddb)
-        # end
-
-        push!(csqlvalues, "('" * string(idperson) * "', " * sqlvalue(erastarterastart * ", " * sqleraend * ")")
+        # it is a bit slower to do call the database in each step, but needs less code
+        DBInterface.execute(insstmt, [idperson, erastart, eraend]);
         tblid += 1
+        if tblid % msg == 0
+            @info tblid
+        end        
     end
 
-    sqlvalues = join(csqlvalues, ", ")
-    DBInterface.execute(dbwiag, "INSERT INTO " * tblera * " VALUES " * sqlvalues)
-
-    # println(sqlvalues);
+    DBInterface.close!(insstmt)
 
     return tblid
 end
@@ -192,11 +192,16 @@ function fillofficedate(tblofficedate::AbstractString,
         setDBWIAG()
     end
 
+    msg = 1000
+
     sql = "SELECT " * colnameid * ", date_start, date_end FROM " * tbloffice
     dfoffice = DBInterface.execute(dbwiag, sql) |> DataFrame;
 
-    csqlvalues = String[]
     tblid = 0;
+    DBInterface.execute(dbwiag, "DELETE FROM " * tblofficedate);
+
+    insstmt = DBInterface.prepare(dbwiag, "INSERT INTO " * tblofficedate * " VALUES (?, ?, ?)")
+    
     for row in eachrow(dfoffice)
         id, date_start, date_end = row
 
@@ -205,40 +210,46 @@ function fillofficedate(tblofficedate::AbstractString,
         if ismissing(numdate_end)
             numdate_end = parsemaybe(date_start, :upper)
         end        
-
-        push!(csqlvalues, "(" * id * ", " * numdate_start * ", " * numdate_end * ")")
-
+        
+        # push!(csqlvalues, "(" * id * ", " * numdate_start * ", " * numdate_end * ")")
+        da = [id, numdate_start, numdate_end]
+        DBInterface.execute(insstmt, da)
         tblid += 1
+        if tblid % msg == 0
+            @info tblid
+        end
         # if tblid > 25 break end
     end
 
-    DBInterface.execute(dbwiag, "DELETE FROM " * tblofficedate);
-
-    sqlvalues = join(csqlvalues, ", ")
-    DBInterface.execute(dbwiag, "INSERT INTO " * tblofficedate * " VALUES " * sqlvalues)
+    DBInterface.close!(insstmt)
+    #sqlvalues = join(csqlvalues, ", ")
+    #DBInterface.execute(dbwiag, "INSERT INTO " * tblofficedate * " VALUES " * sqlvalues)
 
     return tblid
 end
 
 """
-    fillnamelookup(tablename::AbstractString)::Int
+    fillnamelookup(tb::AbstractString)::Int
 
 Fill `tablename` with combinations of givenname and familyname and their variants.
 """
 function fillnamelookup(tbllookup::AbstractString,
                         tblperson::AbstractString,
-                        colnameid::AbstractString = "id")::Int
+                        colnameid::AbstractString = "id";
+                        checkisready = false)::Int
     msg = 200
     if isnothing(dbwiag)
         error("There is no valid database connection. Use `setDBWIAG'.")
     end
 
-    DBInterface.execute(dbwiag, "DELETE FROM " * tbllookup);
+    DBInterface.execute(dbwiag, "DELETE FROM " * tbllookup)
+    
+    sql = "SELECT " * colnameid * " as id_person, " *
+        "givenname, prefix_name, familyname, givenname_variant, familyname_variant " *
+        "FROM " * tblperson * " person " *
+        (checkisready ? "WHERE isready = 1 " : "")
 
-    dfperson = DBInterface.execute(dbwiag,
-                                   "SELECT " * colnameid * " as id_person, " *
-                                   "givenname, prefix_name, familyname, givenname_variant, familyname_variant " *
-                                   "FROM " * tblperson * " person") |> DataFrame;
+    dfperson = DBInterface.execute(dbwiag, sql) |> DataFrame
 
     # SQL
     # INSERT INTO dsttable VALUES (NULL, 'id_person1', 'givenname1', 'prefix_name1', 'familyname1'),
@@ -373,13 +384,13 @@ const rgxlatecentury = Regex("spätes " * rgpcentury, "i")
 
 # around, ...
 const rgpmonth = "(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|Jan\\.|Feb\\.|Mrz\\.|Apr\\.|Jun\\.|Jul\\.|Aug\\.|Sep\\.|Okt\\.|Nov\\.|Dez\\.)"
-const rgxbefore = Regex("(vor|bis|spätestens) " * rgpmonth * "? ?" * rgpyear, "i")
-const rgxaround = Regex("(um|ca\\.|wahrscheinlich) " * rgpyear, "i")
+const rgxbefore = Regex("(vor|bis|spätestens|spät\\.|v\\.) " * rgpmonth * "? ?" * rgpyear, "i")
+const rgxaround = Regex("(um|ca\\.|wahrscheinlich|wohl|etwa|evtl\\.) " * rgpyear, "i")
 const rgxafter = Regex("(nach|frühestens|seit) " * rgpyear, "i")
 
 const rgxcentury = Regex("^ *" * rgpcentury)
-const rgxyear = Regex("^ *" * rgpyear)
-const rgxyearfc = Regex("^ *" * rgpyearfc)
+const rgxyear = Regex("^( *|erwählt *)" * rgpyear)
+const rgxyearfc = Regex("^( *|erwählt *)" * rgpyearfc)
 
 """
     parsemaybe(s, Symbol::dir)
@@ -527,16 +538,16 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
 
     # plain year
     rgm = match(rgxyear, s)
-    if !isnothing(rgm) && !isnothing(rgm[1])
-        year = parse(Int, rgm[1])
+    if !isnothing(rgm) && !isnothing(rgm[2])
+        year = parse(Int, rgm[2])
         return year
     end
 
     # first century
     rgm = match(rgxyearfc, s)
-    if !isnothing(rgm) && !isnothing(rgm[1])
+    if !isnothing(rgm) && !isnothing(rgm[2])
         @info "First century date " s
-        year = parse(Int, rgm[1])
+        year = parse(Int, rgm[2])
         return year
     end
     
