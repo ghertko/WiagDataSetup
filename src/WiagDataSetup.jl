@@ -52,7 +52,7 @@ function updatenamevariant(fieldsrc::AbstractString, tablename::AbstractString):
 end
 
 """
-    fillera(tblera::AbstractString, tblperson::AbstractString, tbloffice::AbstractString, colnameid::AbstractString, datereference=false)::Int
+    fillera(tblera::AbstractString, tblperson::AbstractString, tbloffice::AbstractString, colnameid::AbstractString, datereference=false, checkisonline = true)::Int
 
 Compute earliest and latest date for each person, identified by `colnameid` and `colnameidinoffice`.
 
@@ -63,23 +63,30 @@ function fillera(tblera::AbstractString,
                  tbloffice::AbstractString,
                  colnameid = "id",
                  colnameidinoffice = "id_person";
-                 datereference = false)::Int
+                 datereference = false,
+                 checkisonline = false)::Int
     global dbwiag
     if isnothing(dbwiag)
         error("There is no valid database connection. Use `setDBWIAG'.")
     end
 
     msg = 1000
-    
+
     DBInterface.execute(dbwiag, "DELETE FROM " * tblera);
 
     if datereference
         sqlselect = "SELECT " * colnameid * " as idperson, " *
             " date_birth, date_death, date_hist_first, date_hist_last " *
-            " FROM " * tblperson;
+            " FROM " * tblperson
     else
-        sqlselect = "SELECT " * colnameid * " as idperson, date_birth, date_death " * " FROM " * tblperson;
+        sqlselect = "SELECT " * colnameid * " as idperson, date_birth, date_death " *
+            " FROM " * tblperson
     end
+
+    if checkisonline
+        sqlselect *= " WHERE status = 'online'"
+    end
+
 
     dfperson = DBInterface.execute(dbwiag, sqlselect) |> DataFrame;
 
@@ -88,7 +95,7 @@ function fillera(tblera::AbstractString,
     # get office data
     sqlselect = "SELECT " * colnameidinoffice * ", date_start, date_end " * " FROM " * tbloffice
     dfoffice = DBInterface.execute(dbwiag, sqlselect) |> DataFrame
-    
+
     insstmt = DBInterface.prepare(dbwiag, "INSERT INTO " * tblera * " VALUES (?, ?, ?)")
     for row in eachrow(dfperson)
         erastart = Inf
@@ -163,14 +170,14 @@ function fillera(tblera::AbstractString,
         end
         if eraend == -Inf
             eraend = missing
-        end        
+        end
 
         # it is a bit slower to do call the database in each step, but needs less code
         DBInterface.execute(insstmt, [idperson, erastart, eraend]);
         tblid += 1
         if tblid % msg == 0
             @info tblid
-        end        
+        end
     end
 
     DBInterface.close!(insstmt)
@@ -179,13 +186,17 @@ function fillera(tblera::AbstractString,
 end
 
 """
-    fillofficedate(tblofficedate::AbstractString, tbloffice::AbstractString, colnameid::AbstractString)::Int
+    fillofficedate(tblofficedate::AbstractString, tbloffice::AbstractString, colnameid::AbstractString; checkisonline = false)::Int
 
-Extract dates as an integer values.
+Extract dates as integer values.
 """
 function fillofficedate(tblofficedate::AbstractString,
-                        tbloffice::AbstractString,
-                        colnameid::AbstractString = "id")::Int
+                        tbloffice::AbstractString;
+                        colnameid::AbstractString = "id",
+                        checkisonline = false,
+                        colnameidperson = "wiagid",
+                        colnameidinoffice = "wiagid_person",
+                        tblperson = "person")::Int
 
     global dbwiag
     if isnothing(dbwiag)
@@ -194,23 +205,31 @@ function fillofficedate(tblofficedate::AbstractString,
 
     msg = 1000
 
-    sql = "SELECT " * colnameid * ", date_start, date_end FROM " * tbloffice
+    sql = "SELECT " * colnameid * ", date_start, date_end, id_monastery FROM " * tbloffice
+
+    if checkisonline
+        sql *= " WHERE " * colnameidinoffice *
+            " IN (SELECT " * colnameidperson * " FROM " * tblperson *
+            " WHERE status = 'online')"
+    end
+
     dfoffice = DBInterface.execute(dbwiag, sql) |> DataFrame;
 
     tblid = 0;
     DBInterface.execute(dbwiag, "DELETE FROM " * tblofficedate);
+    sqli = "INSERT INTO " * tblofficedate * "(id_office, date_start, date_end) VALUES (?, ?, ?)"
 
-    insstmt = DBInterface.prepare(dbwiag, "INSERT INTO " * tblofficedate * " VALUES (?, ?, ?)")
-    
+    insstmt = DBInterface.prepare(dbwiag, sqli)
+
     for row in eachrow(dfoffice)
-        id, date_start, date_end = row
+        id, date_start, date_end, id_monastery = row
 
         numdate_start = parsemaybe(date_start, :lower)
         numdate_end = parsemaybe(date_end, :upper)
         if ismissing(numdate_end)
             numdate_end = parsemaybe(date_start, :upper)
-        end        
-        
+        end
+
         # push!(csqlvalues, "(" * id * ", " * numdate_start * ", " * numdate_end * ")")
         da = [id, numdate_start, numdate_end]
         DBInterface.execute(insstmt, da)
@@ -229,25 +248,132 @@ function fillofficedate(tblofficedate::AbstractString,
 end
 
 """
-    fillnamelookup(tb::AbstractString)::Int
+    fillofficelocation(tbloffice::AbstractString, tblofficedate::Abstractstring, tblmonasterylocation::AbstractString, tblplace::AbstractString, colnameid::AbstractString)::Int
+
+Find locations for offices that are related to a monastery.
+"""
+function fillofficelocation(tbloffice::AbstractString,
+                            tblofficedate::AbstractString,
+                            tblmonasterylocation::AbstractString,
+                            tblplace::AbstractString,
+                            colnameid::AbstractString = "id")
+
+    colnameofficeid = "id_office";
+
+    global dbwiag
+    if isnothing(dbwiag)
+        setDBWIAG()
+    end
+
+    msg = 1000
+
+    sqlo = "SELECT " * colnameid * ", id_monastery, location, d.date_start, d.date_end" *
+        " FROM " * tbloffice * " as o" *
+        " LEFT JOIN " * tblofficedate * " as d ON o." * colnameid * " = d." * colnameofficeid
+
+    dfoffice = DBInterface.execute(dbwiag, sqlo) |> DataFrame;
+
+    sqlml = "SELECT place_id, location_name, location_begin_tpq as loc_start, location_end_tpq as loc_end" *
+        " FROM " * tblmonasterylocation * " WHERE location_name IS NOT NULL AND wiagid_monastery = ?"
+    mlstmt = DBInterface.prepare(dbwiag, sqlml)
+
+    sqlmlnn = "SELECT place_id, location_name, location_begin_tpq as loc_start, location_end_tpq as loc_end" *
+        " FROM " * tblmonasterylocation * " WHERE location_name IS NULL AND wiagid_monastery = ?"
+    mlnonamestmt = DBInterface.prepare(dbwiag, sqlmlnn)
+
+    sqlp = "SELECT place_name FROM " * tblplace * " WHERE id_places IN (?)"
+    plstmt = DBInterface.prepare(dbwiag, sqlp)
+
+    sqlupd = "UPDATE " * tbloffice * " SET location = ? WHERE id = ?"
+    updstmt = DBInterface.prepare(dbwiag, sqlupd)
+
+    ntest = 30
+    ir = 0
+    for row in eachrow(dfoffice)
+        places = String[];
+        id, id_monastery, location, date_start, date_end = row
+        if !ismissing(location) && location != "" || ismissing(id_monastery) || id_monastery == ""
+            continue
+        end
+
+        ffilter(loc_start, loc_end) = filterlocbydate(loc_start, loc_end, date_start, date_end)
+
+        ml = DBInterface.execute(mlstmt, [id_monastery]) |> DataFrame;
+        nloc = size(ml, 1)
+        if nloc == 1
+            push!(places, ml[1, :location_name])
+        elseif nloc > 1
+            mlfilter = filter([:loc_start, :loc_end] => ffilter, ml)
+            places = mlfilter[:, :location_name]
+        else
+            mlnn = DBInterface.execute(mlnonamestmt, [id_monastery]) |> DataFrame;
+            # filter only if there is more than one alternative
+            if size(mlnn, 1) > 1
+                mlfilter = filter([:loc_start, :loc_end] => ffilter, mlnn)
+                ids_place = mlfilter[:, :place_id]
+            else
+                ids_place = mlnn[:, :place_id]
+            end
+            if length(ids_place) > 0
+                dfp = DBInterface.execute(plstmt, ids_place) |> DataFrame;
+                places = dfp[:, :place_name]
+            else
+                @warn "No place found for office", id
+            end
+        end
+        if length(places) > 0
+            DBInterface.execute(updstmt, [places[1], id])
+            ir += 1
+            if ir % msg == 0
+                @info ir
+            end
+        end
+
+    end
+
+    return ir;
+end
+
+"""
+    filterlocbydate(loc_start, loc_end, date_start, date_end)
+
+Check if dates for the location and the office are compatibel with each other
+"""
+function filterlocbydate(loc_start, loc_end, date_start, date_end)
+    loc_startint = parsemaybe(loc_start, :lower)
+    if !ismissing(loc_startint) && !ismissing(date_end) && loc_startint > date_end
+        return false
+    end
+    loc_endint = parsemaybe(loc_end, :upper)
+    if !ismissing(loc_endint) && !ismissing(date_start) && loc_endint < date_start
+        return false
+    end
+    return true
+end
+
+"""
+    fillnamelookup(tbllookup::AbstractString,
+                   tblperson::AbstractString,
+                   colnameid::AbstractString = "id";
+                   checkisonline = false)::Int
 
 Fill `tablename` with combinations of givenname and familyname and their variants.
 """
 function fillnamelookup(tbllookup::AbstractString,
                         tblperson::AbstractString,
                         colnameid::AbstractString = "id";
-                        checkisready = false)::Int
+                        checkisonline = false)::Int
     msg = 200
     if isnothing(dbwiag)
         error("There is no valid database connection. Use `setDBWIAG'.")
     end
 
     DBInterface.execute(dbwiag, "DELETE FROM " * tbllookup)
-    
+
     sql = "SELECT " * colnameid * " as id_person, " *
         "givenname, prefix_name, familyname, givenname_variant, familyname_variant " *
         "FROM " * tblperson * " person " *
-        (checkisready ? "WHERE isready = 1 " : "")
+        (checkisonline ? "WHERE status = 'online' " : "")
 
     dfperson = DBInterface.execute(dbwiag, sql) |> DataFrame
 
@@ -286,7 +412,7 @@ function fillnamelookup(tbllookup::AbstractString,
         imsg += 1
 
         if imsg % msg == 0
-            println("write row: ", imsg)
+            @info imsg
         end
     end
     sqlvalues = join(csqlvalues, ", ")
@@ -308,10 +434,10 @@ remove labels in data fields ("Taufname: Karl") and escape apostrophes
 function sqlstring(s::AbstractString)::AbstractString
     poslabel = findfirst(':', s)
     if !isnothing(poslabel)
-        s = strip(s[poslabel + 1:end])
+        s = s[poslabel + 1:end]
     end
     s = replace(s, "'" => "''")
-    s = "'" * s * "'"
+    s = "'" * strip(s) * "'"
     return s
 end
 
@@ -356,15 +482,18 @@ function fillnamelookupgn(id_person, gn, prefix, fn, fnv)
 end
 
 # parse time data
-# quarter
 const rgpcentury = "([1-9][0-9]?)\\. (Jahrh|Jh)"
 const rgpyear = "([1-9][0-9][0-9]+)"
 const rgpyearfc = "([1-9][0-9]+)"
 
-const rgx1qcentury = Regex("(1\\.|erstes) Viertel (des )?" * rgpcentury, "i")
-const rgx2qcentury = Regex("(2\\.|zweites) Viertel (des )?" * rgpcentury, "i")
-const rgx3qcentury = Regex("(3\\.|drittes) Viertel (des )?" * rgpcentury, "i")
-const rgx4qcentury = Regex("(4\\.|viertes) Viertel (des )?" * rgpcentury, "i")
+# turn of the century
+const rgxtcentury = Regex("([1-9][0-9]?)\\./" * rgpcentury, "i")
+
+# quarter
+const rgx1qcentury = Regex("(1\\.|erstes) Viertel +(des )?" * rgpcentury, "i")
+const rgx2qcentury = Regex("(2\\.|zweites) Viertel +(des )?" * rgpcentury, "i")
+const rgx3qcentury = Regex("(3\\.|drittes) Viertel +(des )?" * rgpcentury, "i")
+const rgx4qcentury = Regex("(4\\.|viertes) Viertel +(des )?" * rgpcentury, "i")
 
 # begin, middle end
 const rgx1tcentury = Regex("Anfang (des )?" * rgpcentury, "i")
@@ -372,8 +501,8 @@ const rgx2tcentury = Regex("Mitte (des )?" * rgpcentury, "i")
 const rgx3tcentury = Regex("Ende (des )?" * rgpcentury, "i")
 
 # half
-const rgx1hcentury = Regex("(1\\.|erste) Hälfte (des )?" * rgpcentury, "i")
-const rgx2hcentury = Regex("(2\\.|zweite) Hälfte (des )?" * rgpcentury, "i")
+const rgx1hcentury = Regex("(1\\.|erste) Hälfte +(des )?" * rgpcentury, "i")
+const rgx2hcentury = Regex("(2\\.|zweite) Hälfte +(des )?" * rgpcentury, "i")
 
 # between
 const rgxbetween = Regex("zwischen " * rgpyear * " und " * rgpyear)
@@ -384,9 +513,10 @@ const rgxlatecentury = Regex("spätes " * rgpcentury, "i")
 
 # around, ...
 const rgpmonth = "(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|Jan\\.|Feb\\.|Mrz\\.|Apr\\.|Jun\\.|Jul\\.|Aug\\.|Sep\\.|Okt\\.|Nov\\.|Dez\\.)"
-const rgxbefore = Regex("(vor|bis|spätestens|spät\\.|v\\.) " * rgpmonth * "? ?" * rgpyear, "i")
-const rgxaround = Regex("(um|ca\\.|wahrscheinlich|wohl|etwa|evtl\\.) " * rgpyear, "i")
-const rgxafter = Regex("(nach|frühestens|seit) " * rgpyear, "i")
+const rgxbefore = Regex("(vor|bis|spätestens|spät\\.|v\\.)( [1-9][0-9]?\\.)? " * rgpmonth * "? ?" * rgpyear, "i")
+# add 'circa'
+const rgxaround = Regex("(um|circa|ca\\.|wahrscheinlich|wohl|etwa|evtl\\.) " * rgpyear, "i")
+const rgxafter = Regex("(nach|frühestens|seit|ab) " * rgpyear, "i")
 
 const rgxcentury = Regex("^ *" * rgpcentury)
 const rgxyear = Regex("^( *|erwählt *)" * rgpyear)
@@ -403,8 +533,15 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
     end
 
     year = missing
-    if ismissing(s)
+    if ismissing(s) || s == ""
         return year
+    end
+
+    # turn of the century
+    rgm = match(rgxtcentury, s)
+    if !isnothing(rgm) && !isnothing(rgm[2])
+        year = parse(Int, rgm[2])
+        return year * 100
     end
 
     # quarter
@@ -438,7 +575,7 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
             end
         end
     end
-    
+
     # half
     rgxq = [rgx1hcentury, rgx2hcentury]
     for (q, rgx) in enumerate(rgxq)
@@ -465,7 +602,7 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
             year = parse(Int, rgm[2])
             return year
         end
-    end    
+    end
 
     # early, late
     rgm = match(rgxearlycentury, s)
@@ -490,13 +627,13 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
             year = century * 100
             return year
         end
-    end    
+    end
 
 
     # before, around, after
     rgm = match(rgxbefore, s)
     if !isnothing(rgm)
-        year = parse(Int, rgm[3])
+        year = parse(Int, rgm[4])
         if dir == :lower
             year -= 50
         end
@@ -521,7 +658,7 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
             year += 5
         end
         return year
-    end    
+    end
 
     # century
     rgm = match(rgxcentury, s)
@@ -550,28 +687,28 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
         year = parse(Int, rgm[2])
         return year
     end
-    
+
     # handle other special cases
     if strip(s) == "?" return year end
 
     ssb = strip(s, ['(', ')'])
     if ssb != s
         return parsemaybe(ssb, dir)
-    end    
-    
+    end
+
     @warn "Could not parse " s
     return year
-    
+
 end
 
-""" 
+"""
     sqlvalue(data)
 
 return quoted string or "NULL"
 """
 function sqlvalue(data)::String
     value = ismissing(data) ? "NULL" : "'" * string(data) * "'"
-    return value    
+    return value
 end
 
 
