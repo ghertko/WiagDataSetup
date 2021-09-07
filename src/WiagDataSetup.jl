@@ -6,7 +6,7 @@ using DataFrames
 
 dbwiag = nothing
 
-function setDBWIAG(pwd = missing, host = "127.0.0.1", user = "wiag", db = "wiag")
+function setDBWIAG(;pwd = missing, host = "127.0.0.1", user = "wiag", db = "wiag")
     global dbwiag
     if ismissing(pwd)
         println("Passwort für User ", user)
@@ -52,18 +52,16 @@ function updatenamevariant(fieldsrc::AbstractString, tablename::AbstractString):
 end
 
 """
-    fillera(tblera::AbstractString, tblperson::AbstractString, tbloffice::AbstractString, colnameid::AbstractString, datereference=false, checkisonline = true)::Int
+    fillera(tblera::AbstractString, tblperson::AbstractString, tbloffice::AbstractString, colnameid::AbstractString, checkisonline = true)::Int
 
 Compute earliest and latest date for each person, identified by `colnameid` and `colnameidinoffice`.
 
-Take fields `date_hist_first` and `date_hist_last` into account if `datereference` is set to `true`.
 """
 function fillera(tblera::AbstractString,
                  tblperson::AbstractString,
                  tbloffice::AbstractString,
-                 colnameid = "id",
-                 colnameidinoffice = "id_person";
-                 datereference = false,
+                 colid = "id",
+                 colidinoffice = "id_person";
                  checkisonline = false)::Int
     global dbwiag
     if isnothing(dbwiag)
@@ -74,14 +72,8 @@ function fillera(tblera::AbstractString,
 
     DBInterface.execute(dbwiag, "DELETE FROM " * tblera);
 
-    if datereference
-        sqlselect = "SELECT " * colnameid * " as idperson, " *
-            " date_birth, date_death, date_hist_first, date_hist_last " *
-            " FROM " * tblperson
-    else
-        sqlselect = "SELECT " * colnameid * " as idperson, date_birth, date_death " *
-            " FROM " * tblperson
-    end
+    sqlselect = "SELECT " * colid * " as idperson, date_birth, date_death " *
+        " FROM " * tblperson
 
     if checkisonline
         sqlselect *= " WHERE status = 'online'"
@@ -93,86 +85,20 @@ function fillera(tblera::AbstractString,
     tblid = 0;
 
     # get office data
-    sqlselect = "SELECT " * colnameidinoffice * ", date_start, date_end " * " FROM " * tbloffice
+    sqlselect = "SELECT " * colidinoffice * ", date_start, date_end " * " FROM " * tbloffice
     dfoffice = DBInterface.execute(dbwiag, sqlselect) |> DataFrame
 
     insstmt = DBInterface.prepare(dbwiag, "INSERT INTO " * tblera * " VALUES (?, ?, ?)")
-    for row in eachrow(dfperson)
-        erastart = Inf
-        eraend = -Inf
 
+    for row in eachrow(dfperson)
         idperson, datebirth, datedeath = row[[:idperson, :date_birth, :date_death]]
 
-        vcand = parsemaybe(datebirth, :lower)
-        if !ismissing(vcand) erastart = vcand end
+        dfioffice = filter([Symbol(colidinoffice)] => isequal(idperson), dfoffice)
 
-        vcand = parsemaybe(datedeath, :upper)
-        if ismissing(vcand)
-            # we may have a date like "13. Jhd" only in datebirth
-            vcand = parsemaybe(datebirth, :upper)
-        end
+        erastart, eraend = extremaera(datebirth, datedeath, dfioffice)
 
-        if !ismissing(vcand)
-            eraend = vcand
-        end
 
-        if datereference
-            datehistfirst, datehistlast = row[[:date_hist_first, :date_hist_last]]
-            vcand = parsemaybe(datehistfirst, :lower)
-            if !ismissing(vcand) && vcand < erastart
-                erastart = vcand
-            end
-
-            vcand = parsemaybe(datehistlast, :upper)
-            if ismissing(vcand)
-                # we may have a date like "13. Jhd"
-                vcand = parsemaybe(datehistfirst, :upper)
-            end
-
-            if !ismissing(vcand) && vcand > eraend
-                eraend = vcand
-            end
-        end
-
-        # println(wiagid, " ", typeof(dfoffice[:wiagid_person]))
-        ixperson = dfoffice[:, colnameidinoffice] .== string(idperson)
-
-        dfofficeperson = dfoffice[ixperson, :];
-        for oc in eachrow(dfofficeperson)
-            datestart = oc[:date_start]
-            dateend = oc[:date_end]
-
-            vcand = parsemaybe(datestart, :lower)
-            if !ismissing(vcand) && vcand < erastart
-                erastart = vcand
-            end
-
-            vcand = parsemaybe(dateend, :upper)
-            if ismissing(vcand)
-                # we may have a date like "13. Jhd"
-                vcand = parsemaybe(datestart, :upper)
-            end
-
-            if !ismissing(vcand) && vcand > eraend
-                eraend = vcand
-            end
-
-        end
-
-        if erastart == Inf && eraend != -Inf
-            erastart = eraend
-        elseif erastart != Inf && eraend == -Inf
-            eraend = erastart
-        end
-
-        if erastart == Inf
-            erastart = missing
-        end
-        if eraend == -Inf
-            eraend = missing
-        end
-
-        # it is a bit slower to do call the database in each step, but needs less code
+        # it is a bit slower to call the database in each step, but needs less code
         DBInterface.execute(insstmt, [idperson, erastart, eraend]);
         tblid += 1
         if tblid % msg == 0
@@ -185,18 +111,150 @@ function fillera(tblera::AbstractString,
     return tblid
 end
 
-"""
-    fillofficedate(tblofficedate::AbstractString, tbloffice::AbstractString, colnameid::AbstractString; checkisonline = false)::Int
 
-Extract dates as integer values.
 """
-function fillofficedate(tblofficedate::AbstractString,
-                        tbloffice::AbstractString;
-                        colnameid::AbstractString = "id",
-                        checkisonline = false,
-                        colnameidperson = "wiagid",
-                        colnameidinoffice = "wiagid_person",
-                        tblperson = "person")::Int
+    updatecnera(tblera::AbstractString, tblperson::AbstractString, tblonline::AbstractString, tbloffice::AbstractString, colnameid::AbstractString)::Int
+
+Compute earliest and latest date for each person, identified by `colnameid` and `colnameidinoffice`.
+
+"""
+function updatecnera(tblera::AbstractString,
+                     tblonline::AbstractString,
+                     tblperson::AbstractString,
+                     tbloffice::AbstractString,
+                     colid::AbstractString,
+                     colidinoffice = "id_person")::Int
+    # TODO take into account offices in bishop's database
+    global dbwiag
+    if isnothing(dbwiag)
+        error("There is no valid database connection. Use `setDBWIAG'.")
+    end
+
+    msg = 1000
+
+    @info "update '" * tblera * "'"
+
+    sqlperson = "SELECT po.id as idonline, po." * colid * " as idperson " * ", date_birth, date_death " *
+        " FROM " * tblonline * " AS po " *
+        " JOIN " * tblperson * " AS dh ON dh.id = po." * colid
+
+    dfperson = DBInterface.execute(dbwiag, sqlperson) |> DataFrame;
+
+    tblid = 0;
+
+    # get office data
+    sqloffice = "SELECT " * colidinoffice * ", date_start, date_end " * " FROM " * tbloffice
+    dfoffice = DBInterface.execute(dbwiag, sqloffice) |> DataFrame
+    # @infiltrate
+
+    sqlstart = "UPDATE " * tblera * " SET era_start=?" *
+        " WHERE id_online=? AND (era_start is NULL OR era_start > ?)"
+    updstmtstart = DBInterface.prepare(dbwiag, sqlstart)
+
+    sqlend = "UPDATE " * tblera * " SET era_end=?" *
+        " WHERE id_online=? AND (era_end is NULL OR era_end < ?)"
+    updstmtend = DBInterface.prepare(dbwiag, sqlend)
+
+
+    for row in eachrow(dfperson)
+
+        idonline, idperson, datebirth, datedeath = row[[:idonline, :idperson, :date_birth, :date_death]]
+
+        dfioffice = filter([Symbol(colidinoffice)] => isequal(idperson), dfoffice)
+
+        erastart, eraend = eraextrema(datebirth, datedeath, dfioffice)
+
+
+        # it is a bit slower to call the database in each step, but needs less code
+        if !ismissing(erastart)
+            DBInterface.execute(updstmtstart, [erastart, idonline, erastart])
+        end
+        if !ismissing(eraend)
+            DBInterface.execute(updstmtend, [eraend, idonline, eraend])
+        end
+
+        tblid += 1
+        if tblid % msg == 0
+            @info tblid
+        end
+    end
+
+    DBInterface.close!(updstmtstart)
+    DBInterface.close!(updstmtend)
+
+    return tblid
+end
+
+
+"""
+    eraextrema(datebirth, datedeath, dfoffice)
+
+find extrema in [`datebirth`, `datedeath`] and `dfoffice`
+"""
+function eraextrema(datebirth, datedeath, dfoffice)
+
+    erastart = Inf
+    eraend = -Inf
+
+
+    vcand = parsemaybe(datebirth, :lower)
+    if !ismissing(vcand) erastart = vcand end
+
+    vcand = parsemaybe(datedeath, :upper)
+    if ismissing(vcand)
+        # we may have a date like "13. Jhd" only in datebirth
+        vcand = parsemaybe(datebirth, :upper)
+    end
+
+    if !ismissing(vcand)
+        eraend = vcand
+    end
+
+    for oc in eachrow(dfoffice)
+        datestart = oc[:date_start]
+        dateend = oc[:date_end]
+
+        vcand = parsemaybe(datestart, :lower)
+        if !ismissing(vcand) && vcand < erastart
+            erastart = vcand
+        end
+
+        vcand = parsemaybe(dateend, :upper)
+        if ismissing(vcand)
+            # we may have a date like "13. Jhd"
+            vcand = parsemaybe(datestart, :upper)
+        end
+
+        if !ismissing(vcand) && vcand > eraend
+            eraend = vcand
+        end
+
+    end
+
+    if erastart == Inf && eraend != -Inf
+        erastart = eraend
+    elseif erastart != Inf && eraend == -Inf
+        eraend = erastart
+    end
+
+    if erastart == Inf
+        erastart = missing
+    end
+    if eraend == -Inf
+        eraend = missing
+    end
+
+    return erastart, eraend
+end
+
+
+"""
+    fillpersondate(tblperson::AbstractString)::Int
+
+parse `date_birth` and `date_death`.
+
+"""
+function fillpersondate(tblperson::AbstractString)::Int
 
     global dbwiag
     if isnothing(dbwiag)
@@ -205,18 +263,90 @@ function fillofficedate(tblofficedate::AbstractString,
 
     msg = 1000
 
-    sql = "SELECT " * colnameid * ", date_start, date_end, id_monastery FROM " * tbloffice
+    sqlupdstart = "UPDATE " * tblperson *
+        " SET numdate_birth = ?, date_hist_first = ?" *
+        " WHERE id = ?";
 
-    if checkisonline
-        sql *= " WHERE " * colnameidinoffice *
-            " IN (SELECT " * colnameidperson * " FROM " * tblperson *
-            " WHERE status = 'online')"
+    updstartstmt = DBInterface.prepare(dbwiag, sqlupdstart)
+
+    sqlupdend = "UPDATE " * tblperson *
+        " SET numdate_death = ?, date_hist_last = ?" *
+        " WHERE id = ?";
+
+    updendstmt = DBInterface.prepare(dbwiag, sqlupdend)
+
+    sqldf = "SELECT id, date_birth, date_death FROM " * tblperson
+
+    dfperson = DBInterface.execute(dbwiag, sqldf) |> DataFrame;
+
+    tblid = 0
+    for row in eachrow(dfperson)
+        id, date_birth, date_death = row
+
+        numdate_start = parsemaybe(date_birth, :lower)
+        numdate_end = parsemaybe(date_death, :upper)
+        if ismissing(numdate_end)
+            numdate_end = parsemaybe(date_birth, :upper)
+        end
+
+        if !ismissing(numdate_start)
+            DBInterface.execute(updstartstmt, [numdate_start, numdate_start, id])
+        end
+
+        if !ismissing(numdate_end)
+            DBInterface.execute(updendstmt, [numdate_end, numdate_end, id])
+        end
+
+        tblid += 1
+        if tblid % msg == 0
+            @info tblid
+        end
+    end
+
+    DBInterface.close!(updstartstmt)
+    DBInterface.close!(updendstmt)
+
+    return tblid
+end
+
+
+
+
+"""
+    fillofficedateowntable(tblofficedate::AbstractString,
+                       tbloffice::AbstractString,
+                       colid::AbstractString,
+                       colidperson = "wiagid",
+                       colidinoffice = "wiagid_person",
+                       tblperson = nothing)::Int
+
+Extract dates as integer values. (2021-05-06 obsolete)
+"""
+function fillofficedateowntable(tblofficedate::AbstractString,
+                                tbloffice::AbstractString;
+                                colid::AbstractString = "id",
+                                colidperson = "wiagid",
+                                colidinoffice = "wiagid_person",
+                                tblperson = nothing)::Int
+
+    global dbwiag
+    if isnothing(dbwiag)
+        setDBWIAG()
+    end
+
+    msg = 1000
+
+    sql = "SELECT o." * colid * ", date_start, date_end, id_monastery FROM " * tbloffice * " as o"
+
+    if !isnothing(tblperson)
+        sql *= " JOIN " * tblperson * " as p ON p." * colidperson * " = " * "o." * colidinoffice
     end
 
     dfoffice = DBInterface.execute(dbwiag, sql) |> DataFrame;
 
     tblid = 0;
-    DBInterface.execute(dbwiag, "DELETE FROM " * tblofficedate);
+    # do not clear the table
+    @info "Append to table " tblofficedate
     sqli = "INSERT INTO " * tblofficedate * "(id_office, date_start, date_end) VALUES (?, ?, ?)"
 
     insstmt = DBInterface.prepare(dbwiag, sqli)
@@ -247,16 +377,81 @@ function fillofficedate(tblofficedate::AbstractString,
     return tblid
 end
 
-"""
-    fillofficelocation(tbloffice::AbstractString, tblofficedate::Abstractstring, tblmonasterylocation::AbstractString, tblplace::AbstractString, colnameid::AbstractString)::Int
+function fillofficedate(tbloffice::AbstractString;
+                        colid::AbstractString = "id",
+                        colidperson = "id_dh",
+                        colidinoffice = "id_canon",
+                        tblperson = nothing)::Int
 
-Find locations for offices that are related to a monastery.
+    global dbwiag
+    if isnothing(dbwiag)
+        setDBWIAG()
+    end
+
+    msg = 1000
+
+    sql = "SELECT o." * colid * ", date_start, date_end, id_monastery FROM " * tbloffice * " as o"
+
+    # e.g. take only care of persons that are 'online'
+    if !isnothing(tblperson)
+        sql *= " JOIN " * tblperson * " as p ON p." * colidperson * " = " * "o." * colidinoffice
+    end
+
+    dfoffice = DBInterface.execute(dbwiag, sql) |> DataFrame;
+
+    tblid = 0;
+    # do not clear the table
+    @info "Update table " tbloffice
+    sqlstart = "UPDATE " * tbloffice * " SET numdate_start = ? WHERE id = ?"
+    updstartstmt = DBInterface.prepare(dbwiag, sqlstart)
+
+    sqlend = "UPDATE " * tbloffice * " SET numdate_end = ? WHERE id = ?"
+    updendstmt = DBInterface.prepare(dbwiag, sqlend)
+
+    for row in eachrow(dfoffice)
+        id, date_start, date_end, id_monastery = row
+
+        numdate_start = parsemaybe(date_start, :lower)
+        numdate_end = parsemaybe(date_end, :upper)
+        if ismissing(numdate_end)
+            numdate_end = parsemaybe(date_start, :upper)
+        end
+
+        # push!(csqlvalues, "(" * id * ", " * numdate_start * ", " * numdate_end * ")")
+        if !ismissing(numdate_start)
+            DBInterface.execute(updstartstmt, [numdate_start, id])
+        end
+
+        if !ismissing(numdate_end)
+            DBInterface.execute(updendstmt, [numdate_end, id])
+        end
+
+        tblid += 1
+        if tblid % msg == 0
+            @info tblid
+        end
+        # if tblid > 25 break end
+    end
+
+    DBInterface.close!(updstartstmt)
+    DBInterface.close!(updendstmt)
+    #sqlvalues = join(csqlvalues, ", ")
+    #DBInterface.execute(dbwiag, "INSERT INTO " * tblofficedate * " VALUES " * sqlvalues)
+
+    return tblid
+end
+
+
+"""
+    fillofficelocation(tbloffice::AbstractString, tblmonasterylocation::AbstractString, tblplace::AbstractString; tblonline::AbstractString = nothing, colid::AbstractString)::Int
+
+Find locations for offices that are related to a monastery or write the value of field diocese to location
 """
 function fillofficelocation(tbloffice::AbstractString,
-                            tblofficedate::AbstractString,
                             tblmonasterylocation::AbstractString,
                             tblplace::AbstractString,
-                            colnameid::AbstractString = "id")
+                            tblonline::AbstractString = nothing,
+                            colid::AbstractString = nothing)
 
     colnameofficeid = "id_office";
 
@@ -267,9 +462,16 @@ function fillofficelocation(tbloffice::AbstractString,
 
     msg = 1000
 
-    sqlo = "SELECT " * colnameid * ", id_monastery, location, d.date_start, d.date_end" *
-        " FROM " * tbloffice * " as o" *
-        " LEFT JOIN " * tblofficedate * " as d ON o." * colnameid * " = d." * colnameofficeid
+    if isnothing(tblonline)
+        sqlo = "SELECT o.id, id_monastery, location, diocese," *
+            " o.numdate_start, o.numdate_end" *
+            " FROM " * tbloffice * " as o"
+    else
+        sqlo = "SELECT o.id, id_monastery, location, diocese," *
+            " o.numdate_start, o.numdate_end" *
+            " FROM " * tbloffice * " as o" *
+            " JOIN " * tblonline * " as l ON o.id_canon = l." * colid;
+    end
 
     dfoffice = DBInterface.execute(dbwiag, sqlo) |> DataFrame;
 
@@ -284,52 +486,70 @@ function fillofficelocation(tbloffice::AbstractString,
     sqlp = "SELECT place_name FROM " * tblplace * " WHERE id_places IN (?)"
     plstmt = DBInterface.prepare(dbwiag, sqlp)
 
-    sqlupd = "UPDATE " * tbloffice * " SET location = ? WHERE id = ?"
+    sqlupd = "UPDATE " * tbloffice * " SET location_show = ? WHERE id = ?"
     updstmt = DBInterface.prepare(dbwiag, sqlupd)
 
-    ntest = 30
+    ntest = 100000
     ir = 0
     for row in eachrow(dfoffice)
         places = String[];
-        id, id_monastery, location, date_start, date_end = row
-        if !ismissing(location) && location != "" || ismissing(id_monastery) || id_monastery == ""
-            continue
-        end
+        id, id_monastery, location, diocese, date_start, date_end =
+            row[[:id, :id_monastery, :location, :diocese, :numdate_start, :numdate_end]]
 
-        ffilter(loc_start, loc_end) = filterlocbydate(loc_start, loc_end, date_start, date_end)
-
-        ml = DBInterface.execute(mlstmt, [id_monastery]) |> DataFrame;
-        nloc = size(ml, 1)
-        if nloc == 1
-            push!(places, ml[1, :location_name])
-        elseif nloc > 1
-            mlfilter = filter([:loc_start, :loc_end] => ffilter, ml)
-            places = mlfilter[:, :location_name]
-        else
-            mlnn = DBInterface.execute(mlnonamestmt, [id_monastery]) |> DataFrame;
-            # filter only if there is more than one alternative
-            if size(mlnn, 1) > 1
-                mlfilter = filter([:loc_start, :loc_end] => ffilter, mlnn)
-                ids_place = mlfilter[:, :place_id]
-            else
-                ids_place = mlnn[:, :place_id]
+        # use values of `location` or `diocese` if present
+        if !ismissing(location) && location != ""
+            push!(places, location)
+        elseif ismissing(id_monastery) || id_monastery == ""
+            if !ismissing(diocese)
+                push!(places, diocese)
             end
-            if length(ids_place) > 0
-                dfp = DBInterface.execute(plstmt, ids_place) |> DataFrame;
-                places = dfp[:, :place_name]
+        else
+            ffilter(loc_start, loc_end) = filterlocbydate(loc_start, loc_end, date_start, date_end)
+
+            # monasteries where a location name is given
+            ml = DBInterface.execute(mlstmt, [id_monastery]) |> DataFrame;
+            nloc = size(ml, 1)
+            if nloc == 1
+                push!(places, ml[1, :location_name])
+            elseif nloc > 1
+                mlfilter = filter([:loc_start, :loc_end] => ffilter, ml)
+                places = mlfilter[:, :location_name]
             else
-                @warn "No place found for office", id
+                # monasteries where no location name is given
+                mlnn = DBInterface.execute(mlnonamestmt, [id_monastery]) |> DataFrame;
+                # filter only if there is more than one alternative
+                if size(mlnn, 1) > 1
+                    mlfilter = filter([:loc_start, :loc_end] => ffilter, mlnn)
+                ids_place = mlfilter[:, :place_id]
+                else
+                    ids_place = mlnn[:, :place_id]
+                end
+                if length(ids_place) > 0
+                    dfp = DBInterface.execute(plstmt, ids_place) |> DataFrame;
+                    places = dfp[:, :place_name]
+                else
+                    @warn "No place found for office", id
+                end
             end
         end
         if length(places) > 0
-            DBInterface.execute(updstmt, [places[1], id])
+            locationshow = String(strip(places[1]))
+            DBInterface.execute(updstmt, [locationshow, id])
             ir += 1
             if ir % msg == 0
                 @info ir
             end
+            if ir > ntest
+                break
+            end
         end
 
     end
+
+    DBInterface.close!(updstmt)
+    DBInterface.close!(plstmt)
+    DBInterface.close!(mlnonamestmt)
+    DBInterface.close!(mlstmt)
 
     return ir;
 end
@@ -425,6 +645,129 @@ function fillnamelookup(tbllookup::AbstractString,
 
 end
 
+"""
+    fillcnnamelookup(tbllookup::AbstractString,
+                     tblonline::AbstractString,
+                     tblcanon::AbstractString,
+                     tblcanongs::AbstractString)::Int
+
+Fill `tablename` (for canons) with combinations of givenname and familyname and their variants.
+"""
+function fillcnnamelookup(tbllookup::AbstractString,
+                          tblonline::AbstractString,
+                          tblcanon::AbstractString,
+                          tblcanongs::AbstractString)::Int
+    msg = 400
+    if isnothing(dbwiag)
+        error("There is no valid database connection. Use `setDBWIAG'.")
+    end
+
+    DBInterface.execute(dbwiag, "DELETE FROM " * tbllookup)
+    @info "clear " tbllookup
+
+    sql = "SELECT id, id_dh, id_gs FROM " * tblonline
+
+    dfonline = DBInterface.execute(dbwiag, sql) |> DataFrame
+
+    sqldh = "SELECT id as id_person, " *
+        "givenname, prefix_name, familyname, givenname_variant, familyname_variant " *
+        "FROM " * tblcanon *
+        " WHERE ID = ?"
+
+    stmtdh = DBInterface.prepare(dbwiag, sqldh)
+    sqlgs = "SELECT id as id_person, " *
+        "givenname, prefix_name, familyname, givenname_variant, familyname_variant " *
+        "FROM " * tblcanongs *
+        " WHERE ID = ?"
+
+    stmtgs = DBInterface.prepare(dbwiag, sqlgs)
+
+    sqllookup = "INSERT INTO " * tbllookup * " VALUES (NULL, ?, ?, ?, ?, ?, ?)"
+
+    stmtlookup = DBInterface.prepare(dbwiag, sqllookup)
+
+
+    # SQL
+    # INSERT INTO dsttable VALUES (NULL, 'id_person1', 'givenname1', 'prefix_name1', 'familyname1'),
+    # ('NULL', 'id_person2', 'givenname2', 'prefix_name2', 'familyname2');
+    #
+    # structure
+    # gn[:] prefix fn|fnv
+    # gn[1] prefix fn|fnv
+    # gnv[:] prefix fn|fnv
+    # gnv[1] prefix fn|fnv
+
+    # In the web application choose a version with or without prefix.
+
+    imsg = 0
+
+    for online in eachrow(dfonline)
+        id_online, id_person = online[[:id, :id_dh]]
+        nvars = 0
+        if !ismissing(id_person)
+            dfperson = DBInterface.execute(stmtdh, [id_person]) |> DataFrame
+            if size(dfperson, 1) != 1
+                @warn "No exact match for " id_online
+            else
+                nvars = insertlookuprows(stmtlookup, id_online, dfperson[1, :])
+            end
+        end
+        id_online, id_person = online[[:id, :id_gs]]
+        if !ismissing(id_person)
+            dfperson = DBInterface.execute(stmtgs, [id_person]) |> DataFrame
+            if size(dfperson, 1) != 1
+                @warn "No exact match for " id_online
+            else
+                nvars += insertlookuprows(stmtlookup, id_online, dfperson[1, :])
+            end
+        end
+        # @infiltrate id_online == "WIAG-Pers-CANON-80886-001"
+
+        imsg += 1
+        if imsg % msg == 0
+            @info imsg
+        end
+    end
+
+    return imsg
+end
+
+
+function insertlookuprows(stmt, id_online, row)
+    gn = row[:givenname]
+    prefix = row[:prefix_name]
+    fn = row[:familyname]
+    gnv = row[:givenname_variant]
+    fnv = row[:familyname_variant]
+
+    csqlvalues = String[]
+
+    function insertvars(variants)
+        for variant in variants
+            DBInterface.execute(stmt, vcat([id_online], variant))
+        end
+    end
+
+    nvars = 0
+    vars = makevariantsgn(gn, prefix, fn, fnv)
+    nvars += length(vars)
+    insertvars(vars)
+
+    if !ismissing(gnv) && gnv != ""
+        # set of givennames
+        cgnv = split(gnv, r", *")
+        for gnve in cgnv
+            vars = makevariantsgn(gnve, prefix, fn, fnv)
+            nvars += length(vars)
+            insertvars(vars)
+        end
+    end
+    # @infiltrate id_online == "WIAG-Pers-CANON-80886-001"
+
+    return nvars
+
+end
+
 
 """
     sqlstring(s::AbstractString)::AbstractString
@@ -436,34 +779,54 @@ function sqlstring(s::AbstractString)::AbstractString
     if !isnothing(poslabel)
         s = s[poslabel + 1:end]
     end
-    s = replace(s, "'" => "''")
-    s = "'" * strip(s) * "'"
+    s = replace(strip(s), "'" => "''")
     return s
 end
 
+"""
+    makevariantsgn(gn, prefix, fn, fnv)
 
-function fillnamelookupgn(id_person, gn, prefix, fn, fnv)
-    csql = String[]
+return an array of variants
+"""
+function makevariantsgn(gn, prefix, fn, fnv)
+    csql = Vector{Vector{Union{String, Missing}}}()
 
-    isnull(s) = ismissing(s) || s == "NULL"
-    function pushcsql(gni, fni)
-        sgni = isnull(gni) ? "NULL" : sqlstring(gni)
-        sfni = isnull(fni) ? "NULL" : sqlstring(fni)
-        prefixi = isnull(prefix) ? "NULL" : sqlstring(prefix)
-        if !ismissing(id_person)
-            id_person_sql = sqlstring(id_person)
-            values = "(" * "NULL, " * id_person_sql * ", " * sgni * ", " * prefixi * ", " * sfni * ")"
-            push!(csql, values)
+    function getvalue(s)
+        if ismissing(s) || s == "NULL" || s == ""
+            return missing
         else
-            @warn "Missing ID for ", gni
+            return sqlstring(s)
         end
     end
 
-    pushcsql(gn, fn)
+    function pushcsql(gni, fni)
+        sgni = getvalue(gni)
+        sfni = getvalue(fni)
+        sprefix = getvalue(prefix)
+        # skip the prefix if it is contained in the variant
+        if !ismissing(sprefix) && !ismissing(sfni) &&
+            (occursin(sprefix * " ", sfni) || occursin(" " * sprefix * " ", sfni))
+            sprefix = missing
+        end
+        values = [
+            sgni,
+            sprefix,
+            sfni,
+            ismissing(sfni) ? missing : sgni * " " * sfni,
+            ismissing(sfni) || ismissing(sprefix) ? missing : sgni * " " * sprefix * " " * sfni
+        ]
+        push!(csql, values)
+    end
+
+    # pushcsql(gn, fn)
     cgn = split(gn);
-    # more than one givenname -> write a version with the first givenname only
+    for gnsingle in cgn
+        pushcsql(gnsingle, fn)
+    end
+
+    # more than one givenname; write complete name
     if length(cgn) > 1
-        pushcsql(cgn[1], fn)
+        pushcsql(gn, fn)
     end
 
     # familyname variants
@@ -472,8 +835,8 @@ function fillnamelookupgn(id_person, gn, prefix, fn, fnv)
         for fnve in cfnv
             pushcsql(gn, fnve)
             # more than one givenname
-            if length(cgn) > 1
-                pushcsql(cgn[1], fnve)
+            for gnsingle in cgn
+                pushcsql(gnsingle, fnve)
             end
         end
     end
@@ -521,6 +884,8 @@ const rgxafter = Regex("(nach|frühestens|seit|ab) " * rgpyear, "i")
 const rgxcentury = Regex("^ *" * rgpcentury)
 const rgxyear = Regex("^( *|erwählt *)" * rgpyear)
 const rgxyearfc = Regex("^( *|erwählt *)" * rgpyearfc)
+const stripchars = ['†', '[', ']', ' ', '(', ')']
+const rgxbelegt = r"belegt(.*)"
 
 """
     parsemaybe(s, Symbol::dir)
@@ -536,6 +901,18 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
     if ismissing(s) || s == ""
         return year
     end
+
+    # strip 'belegt'
+    # prog: use replace instead
+    rgm = match(rgxbelegt, s)
+    if !isnothing(rgm)
+        s = rgm[1]
+    end
+
+    # handle special cases
+    s = strip(s, stripchars)
+
+    if strip(s) == "?" return year end
 
     # turn of the century
     rgm = match(rgxtcentury, s)
@@ -621,7 +998,7 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
     if !isnothing(rgm) && !isnothing(rgm[1])
         century = parse(Int, rgm[1])
         if dir == :lower
-            year = century * 100 - 20
+            year = century * 100 - 19
             return year
         elseif dir == :upper
             year = century * 100
@@ -666,11 +1043,10 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
         century = parse(Int, rgm[1])
         if dir == :lower
             year = (century - 1) * 100 + 1
-            return year
         elseif dir == :upper
             year = century * 100
-            return year
         end
+        return year
     end
 
     # plain year
@@ -710,7 +1086,6 @@ function sqlvalue(data)::String
     value = ismissing(data) ? "NULL" : "'" * string(data) * "'"
     return value
 end
-
 
 
 end
