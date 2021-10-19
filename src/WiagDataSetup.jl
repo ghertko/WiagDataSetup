@@ -3,11 +3,16 @@ module WiagDataSetup
 using MySQL
 using Infiltrator
 using DataFrames
+using CSV
 
 dbwiag = nothing
 
 function setDBWIAG(;pwd = missing, host = "127.0.0.1", user = "wiag", db = "wiag")
     global dbwiag
+    if !isnothing(dbwiag)
+        DBInterface.close!(dbwiag)
+    end
+
     if ismissing(pwd)
         println("Passwort für User ", user)
         pwd = readline()
@@ -890,7 +895,7 @@ const rgxbelegt = r"belegt(.*)"
 """
     parsemaybe(s, Symbol::dir)
 
-Parse `s` for an earliest or latest date.
+Parse `s` for an earliest or latest date. `dir` is `:upper` or `:lower`
 """
 function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
     if !(dir in [:lower, :upper])
@@ -1085,6 +1090,132 @@ return quoted string or "NULL"
 function sqlvalue(data)::String
     value = ismissing(data) ? "NULL" : "'" * string(data) * "'"
     return value
+end
+
+"""
+    filltable!(tablename::AbstractString, df::AbstractDataFrame; clear_table = false)::Int
+
+read data from `df` and fill table `tablename`
+
+The columns in `df` must correspond to the field names in the database table.
+"""
+function filltable!(tablename::AbstractString, df::AbstractDataFrame; clear_table = false)::Int
+    global dbwiag
+
+    if isnothing(dbwiag)
+        setDBWIAG()
+    end
+
+    if clear_table
+        DBInterface.execute(dbwiag, "DELETE FROM " * tablename)
+    end
+
+    # CSV returns String31 which is not properly handled by DBInterface
+    function create_sql_row(row)
+        sql_row = collect(row)
+        for (i, e) in enumerate(sql_row)
+            if typeof(e) <: AbstractString
+                sql_row[i] = String(e)
+            end
+        end
+        return sql_row
+    end
+
+
+    # fill database tables with chunks of data for performance reasons
+    df_size = size(df, 1)
+    chunk_size = 1000
+    cols = join(names(df), ",")
+    n_cols = length(names(df));
+    placeholder_set = "(" * repeat("?,", n_cols - 1) * "?)"
+    sql = "INSERT INTO " * tablename * "(" * cols * ")" *
+        " VALUES " * repeat(placeholder_set * ",", chunk_size - 1) * placeholder_set
+    stmt = DBInterface.prepare(dbwiag, sql)
+
+    (n_chunk, n_remaining) = divrem(size(df, 1), chunk_size)
+    count_line = 0
+    msg_step = 10000
+    chunk = Any[]
+    for row in eachrow(view(df, 1:(n_chunk * chunk_size), :))
+        push!(chunk, create_sql_row(row))
+        count_line += 1
+        if count_line % chunk_size == 0
+            sql_chunk = vcat(reverse(chunk)...)
+            DBInterface.execute(stmt, sql_chunk)
+            chunk = Any[]
+        end
+        if count_line % msg_step == 0
+            @info count_line
+        end
+    end
+    DBInterface.close!(stmt)
+
+    # rest
+    n_cols = length(names(df));
+    placeholder_set = "(" * repeat("?,", n_cols - 1) * "?)"
+    sql = "INSERT INTO " * tablename * "(" * cols * ")" *
+        " VALUES " * placeholder_set
+    stmt = DBInterface.prepare(dbwiag, sql)
+
+    chunk = Any[]
+    for row in eachrow(view(df, df_size - n_remaining + 1:df_size, :))
+        sql_row = create_sql_row(row)
+        count_line += 1
+        DBInterface.execute(stmt, sql_row)
+        if count_line % msg_step == 0
+            @info count_line
+        end
+    end
+    DBInterface.close!(stmt)
+
+    @info "Rows inserted: " * string(count_line)
+
+    return count_line;
+end
+
+"""
+    clean_up(df::AbstractDataFrame)
+
+remove whitespaces
+"""
+function clean_up!(df::AbstractDataFrame)
+    function pure(x)
+        r = x
+        if typeof(x)<:AbstractString
+            r = strip(x)
+            if x == ""
+                r = missing
+            end
+        end
+        return r
+    end
+
+    for col in names(df)
+        df[!, col] = pure.(df[!, col])
+    end
+
+end
+
+const WIKIPEDIA_PREFIX = "https://de.wikipedia.org/wiki/"
+
+"""
+    fix_Wikipedia_URL(s)
+
+fix malformed Wikipedia URL, strip prefix
+"""
+function fix_Wikipedia_URL(url)
+    rp = findfirst("http", url[5:end])
+    if !isnothing(rp)
+        url = url[rp.start + 4:end]
+    end
+    url = strip(url, '#')
+    # strip prefix
+    rp_prefix = findfirst(WIKIPEDIA_PREFIX, url)
+    if !isnothing(rp_prefix)
+        url = url[rp_prefix.stop + 1:end]
+        println(url)
+    end
+    return url
 end
 
 
