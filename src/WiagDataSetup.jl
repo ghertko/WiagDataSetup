@@ -4,6 +4,8 @@ using MySQL
 using Infiltrator
 using DataFrames
 using CSV
+using HTTP
+using JSON
 
 dbwiag = nothing
 
@@ -19,6 +21,13 @@ function setDBWIAG(;pwd = missing, host = "127.0.0.1", user = "wiag", db = "wiag
     end
     dbwiag = DBInterface.connect(MySQL.Connection, host, user, pwd, db = db)
 end
+
+"""
+    sql_df(sql)
+
+execute the commands in `sql` and return a DataFrame
+"""
+sql_df(sql) = DBInterface.execute(dbwiag, sql) |> DataFrame
 
 """
     updatenamevariant()
@@ -480,12 +489,16 @@ function fillofficelocation(tbloffice::AbstractString,
 
     dfoffice = DBInterface.execute(dbwiag, sqlo) |> DataFrame;
 
-    sqlml = "SELECT place_id, location_name, location_begin_tpq as loc_start, location_end_tpq as loc_end" *
-        " FROM " * tblmonasterylocation * " WHERE location_name IS NOT NULL AND wiagid_monastery = ?"
+    sqlml = "SELECT place_id, location_name, place_name, " *
+        "location_begin_tpq as loc_start, location_end_tpq as loc_end" *
+        " FROM " * tblmonasterylocation *
+        " WHERE (location_name IS NOT NULL OR place_name IS NOT NULL) AND wiagid_monastery = ?"
     mlstmt = DBInterface.prepare(dbwiag, sqlml)
 
-    sqlmlnn = "SELECT place_id, location_name, location_begin_tpq as loc_start, location_end_tpq as loc_end" *
-        " FROM " * tblmonasterylocation * " WHERE location_name IS NULL AND wiagid_monastery = ?"
+    sqlmlnn = "SELECT place_id, location_name, place_name, " *
+        "location_begin_tpq as loc_start, location_end_tpq as loc_end" *
+        " FROM " * tblmonasterylocation *
+        " WHERE place_id IS NOT NULL AND location_name IS NULL AND wiagid_monastery = ?"
     mlnonamestmt = DBInterface.prepare(dbwiag, sqlmlnn)
 
     sqlp = "SELECT place_name FROM " * tblplace * " WHERE id_places IN (?)"
@@ -515,12 +528,16 @@ function fillofficelocation(tbloffice::AbstractString,
             ml = DBInterface.execute(mlstmt, [id_monastery]) |> DataFrame;
             nloc = size(ml, 1)
             if nloc == 1
-                push!(places, ml[1, :location_name])
+                places = vcat(ml[:, :location_name], ml[:, :place_name])
+                places = collect(skipmissing(places))
             elseif nloc > 1
                 mlfilter = filter([:loc_start, :loc_end] => ffilter, ml)
-                places = mlfilter[:, :location_name]
+                places = vcat(mlfilter[:, :location_name], mlfilter[:, :place_name])
+                places = collect(skipmissing(places))
             else
-                # monasteries where no location name is given
+                # 2021-11-22 obsolete: we read monastery locations via HTTP from
+                # GS-Klosterdatenbank and do not map places to monasteries
+                # where no location name is given
                 mlnn = DBInterface.execute(mlnonamestmt, [id_monastery]) |> DataFrame;
                 # filter only if there is more than one alternative
                 if size(mlnn, 1) > 1
@@ -530,6 +547,7 @@ function fillofficelocation(tbloffice::AbstractString,
                     ids_place = mlnn[:, :place_id]
                 end
                 if length(ids_place) > 0
+                    @info ids_place
                     dfp = DBInterface.execute(plstmt, ids_place) |> DataFrame;
                     places = dfp[:, :place_name]
                 else
@@ -538,8 +556,8 @@ function fillofficelocation(tbloffice::AbstractString,
             end
         end
         if length(places) > 0
-            locationshow = String(strip(places[1]))
-            DBInterface.execute(updstmt, [locationshow, id])
+            location_show = places[1];
+            DBInterface.execute(updstmt, [location_show, id])
             ir += 1
             if ir % msg == 0
                 @info ir
@@ -817,31 +835,29 @@ function makevariantsgn(gn, prefix, fn, fnv)
             sgni,
             sprefix,
             sfni,
-            ismissing(sfni) ? missing : sgni * " " * sfni,
+            ismissing(sfni) ? sgni : sgni * " " * sfni,
             ismissing(sfni) || ismissing(sprefix) ? missing : sgni * " " * sprefix * " " * sfni
         ]
         push!(csql, values)
     end
 
-    # pushcsql(gn, fn)
-    cgn = split(gn);
-    for gnsingle in cgn
-        pushcsql(gnsingle, fn)
-    end
+    # complete name
+    pushcsql(gn, fn)
 
-    # more than one givenname; write complete name
+    cgn = split(gn, r" +")
+    # more than one givenname (Hans Otto): write first part + familyname
     if length(cgn) > 1
-        pushcsql(gn, fn)
+        pushcsql(cgn[1], fn)
     end
 
     # familyname variants
     if !ismissing(fnv) && strip(fnv) != ""
-        cfnv = split(fnv, r", *")
+        cfnv = split(fnv, r",|; *")
         for fnve in cfnv
             pushcsql(gn, fnve)
-            # more than one givenname
-            for gnsingle in cgn
-                pushcsql(gnsingle, fnve)
+            # more than one givenname (Hans Otto): write first part + familyname variant
+            if length(cgn) > 1
+                pushcsql(cgn[1], fnve)
             end
         end
     end
@@ -1064,6 +1080,12 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
     # first century
     rgm = match(rgxyearfc, s)
     if !isnothing(rgm) && !isnothing(rgm[2])
+        # unorthodox century date format?
+        rgmi = match(Regex(rgpcentury), s)
+        if isnothing(rgmi)
+            @warn "Could not parse " s
+            return year # missing
+        end
         @info "First century date " s
         year = parse(Int, rgm[2])
         return year
@@ -1075,6 +1097,15 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
     ssb = strip(s, ['(', ')'])
     if ssb != s
         return parsemaybe(ssb, dir)
+    end
+
+    # try to find a year
+    rgxyearpx = r"([1-9][0-9][0-9][0-9]?)"
+    rgm = match(rgxyearpx, s)
+    if !isnothing(rgm) && !isnothing(rgm[1])
+        @warn "Could only find year in " s
+        year = parse(Int, rgm[1])
+        return year
     end
 
     @warn "Could not parse " s
@@ -1204,6 +1235,9 @@ const WIKIPEDIA_PREFIX = "https://de.wikipedia.org/wiki/"
 fix malformed Wikipedia URL, strip prefix
 """
 function fix_Wikipedia_URL(url)
+    if ismissing(url)
+        return url
+    end
     rp = findfirst("http", url[5:end])
     if !isnothing(rp)
         url = url[rp.start + 4:end]
@@ -1213,10 +1247,150 @@ function fix_Wikipedia_URL(url)
     rp_prefix = findfirst(WIKIPEDIA_PREFIX, url)
     if !isnothing(rp_prefix)
         url = url[rp_prefix.stop + 1:end]
-        println(url)
+        # println(url)
     end
     return url
 end
 
+"""
+    expand_column(df::AbstractDataFrame, col; delim = ',')
+
+"""
+function expand_column(df::AbstractDataFrame, col; delim = r", *")
+    df_out = empty(df);
+    for row in eachrow(df)
+        c_col_new = strip.(split(row[col], delim))
+        for value in c_col_new
+            push!(df_out, row)
+            r_new = df_out[end, col] = value
+        end
+    end
+    return df_out
+end
+
+"""
+    fill_name_lookup!(df_dst::AbstractDataFrame, df_src::AbstractDataFrame)
+
+generate combinations of name variants in `df_src` and write them to `df_dst`
+"""
+function create_name_lookup(df::AbstractDataFrame)
+    df_dst = DataFrame(person_id = Int[],
+                       gn_fn = Union{String, Missing}[],
+                       gn_prefix_fn = Union{String, Missing}[])
+
+    function append_variants(id_person, variants)
+        for row in variants
+            push!(df_dst, (id_person, row[4], row[5]))
+        end
+    end
+
+    for row in eachrow(df)
+        id_person = row[:id]
+        variants = makevariantsgn(row[[:givenname, :prefix_name, :familyname, :familyname_variant]]...)
+        append_variants(id_person, variants)
+        # given name variants
+        gnv_raw = row[:givenname_variant]
+        if !ismissing(gnv_raw)
+            c_gnv = split(gnv_raw, r", *")
+            for gnv in c_gnv
+                variants = makevariantsgn(gnv, row[[:prefix_name, :familyname, :familyname_variant]]...)
+                append_variants(id_person, variants)
+            end
+        end
+    end
+
+    return df_dst
+
+end
+
+url_gs_monasteries = "https://api.gs.sub.uni-goettingen.de/v1/monastery/"
+
+"""
+    get_gs_monasteries!(df_mon, df_mon_loc, df_id_mon)
+
+request monasteries in `df_id_mon` and fill `df_mon`, `df_mon_loc`
+"""
+function get_gs_monasteries!(df_mon::AbstractDataFrame,
+                             df_mon_loc::AbstractDataFrame,
+                             c_id_mon)
+
+    global url_gs_monasteries
+    cols_mon = names(df_mon)
+    cols_loc = names(df_mon_loc)
+
+    empty_row = fill(missing, length(cols_mon) - 1)
+
+    count = 0
+    msg_count = 80;
+    max_count = 100000;
+    for id in c_id_mon
+        id_number = parse(Int, id);
+        data = get_gs_monastery_data(id)
+        if !isnothing(data)
+            # println(make_row(id, data))
+            row = vcat([id_number], dict_to_array(data, cols_mon, ["wiagid"]))
+            push!(df_mon, row)
+            for loc in data["locations"]
+                row_loc = vcat([id_number], dict_to_array(loc, cols_loc, ["wiagid_monastery"]))
+                push!(df_mon_loc, row_loc)
+            end
+        else
+            # add dummy data to avoid inconsistencies in the database structure
+            push!(df_mon, vcat([id_number], empty_row))
+        end
+
+        count += 1
+        if count % msg_count == 0
+            @info count
+        end
+        if count > max_count; break; end
+
+    end
+
+    return nothing
+end
+
+
+"""
+    get_gs_monastery_data(id)
+
+request data for `id` from GS Klosterdatenbank
+
+"""
+function get_gs_monastery_data(id)
+    url = url_gs_monasteries * string(id)
+    r = HTTP.request("GET", url)
+    status = r.status
+    if status != 200
+        @warn "Status " * string(status) * " for id " * string(id)
+        return nothing
+    end
+
+    body = String(r.body)
+    data = nothing
+    try
+        data = JSON.parse(body)
+    catch(e)
+        @warn "Could not parse " * body * " (id: " * string(id) * ")"
+    end
+    return data
+end
+
+"""
+    dict_to_array(d, keys, skip_keys)
+
+find values for `keys` in `d`
+"""
+function dict_to_array(d::AbstractDict, keys, skip_keys = String[])
+    r = Any[]
+    for k in keys
+        if k in skip_keys
+            continue
+        end
+        val = isnothing(d[k]) ? missing : d[k]
+        push!(r, val)
+    end
+    return r
+end
 
 end
