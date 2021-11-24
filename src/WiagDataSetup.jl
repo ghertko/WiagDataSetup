@@ -1324,19 +1324,18 @@ function get_gs_monasteries!(df_mon::AbstractDataFrame,
     msg_count = 80;
     max_count = 100000;
     for id in c_id_mon
-        id_number = parse(Int, id);
         data = get_gs_monastery_data(id)
         if !isnothing(data)
             # println(make_row(id, data))
-            row = vcat([id_number], dict_to_array(data, cols_mon, ["wiagid"]))
+            row = vcat([id], dict_to_array(data, cols_mon, ["wiagid"]))
             push!(df_mon, row)
             for loc in data["locations"]
-                row_loc = vcat([id_number], dict_to_array(loc, cols_loc, ["wiagid_monastery"]))
+                row_loc = vcat([id], dict_to_array(loc, cols_loc, ["wiagid_monastery"]))
                 push!(df_mon_loc, row_loc)
             end
         else
             # add dummy data to avoid inconsistencies in the database structure
-            push!(df_mon, vcat([id_number], empty_row))
+            push!(df_mon, vcat([id], empty_row))
         end
 
         count += 1
