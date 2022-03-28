@@ -6,6 +6,13 @@ using DataFrames
 using CSV
 using HTTP
 using JSON
+using Base
+
+function cp_valid(a, b)
+    ismissing(a) && (a = b)
+    ismissing(b) && (b = a)
+    return a, b
+end
 
 dbwiag = nothing
 
@@ -16,8 +23,9 @@ function setDBWIAG(;pwd = missing, host = "127.0.0.1", user = "wiag", db = "wiag
     end
 
     if ismissing(pwd)
-        println("Passwort für User ", user)
-        pwd = readline()
+        io_pwd = Base.getpass("Passwort für User " * user)
+        pwd = readline(io_pwd)
+        Base.shred!(io_pwd)
     end
     dbwiag = DBInterface.connect(MySQL.Connection, host, user, pwd, db = db)
 end
@@ -464,8 +472,8 @@ Find locations for offices that are related to a monastery or write the value of
 function fillofficelocation(tbloffice::AbstractString,
                             tblmonasterylocation::AbstractString,
                             tblplace::AbstractString,
-                            tblonline::AbstractString = nothing,
-                            colid::AbstractString = nothing)
+                            tblonline::AbstractString = "",
+                            colid::AbstractString = "")
 
     colnameofficeid = "id_office";
 
@@ -476,7 +484,7 @@ function fillofficelocation(tbloffice::AbstractString,
 
     msg = 1000
 
-    if isnothing(tblonline)
+    if isequal(tblonline, "")
         sqlo = "SELECT o.id, id_monastery, location, diocese," *
             " o.numdate_start, o.numdate_end" *
             " FROM " * tbloffice * " as o"
@@ -835,8 +843,8 @@ function makevariantsgn(gn, prefix, fn, fnv)
             sgni,
             sprefix,
             sfni,
-            ismissing(sfni) ? sgni : sgni * " " * sfni,
-            ismissing(sfni) || ismissing(sprefix) ? missing : sgni * " " * sprefix * " " * sfni
+            ismissing(sfni) ? sgni : (ismissing(sgni) ? sfni : sgni * " " * sfni),
+            sgni * " " * sprefix * " " * sfni
         ]
         push!(csql, values)
     end
@@ -844,10 +852,12 @@ function makevariantsgn(gn, prefix, fn, fnv)
     # complete name
     pushcsql(gn, fn)
 
-    cgn = split(gn, r" +")
-    # more than one givenname (Hans Otto): write first part + familyname
-    if length(cgn) > 1
-        pushcsql(cgn[1], fn)
+    if !ismissing(gn)
+        cgn = split(gn, r" +")
+        # more than one givenname (Hans Otto): write first part + familyname
+        if length(cgn) > 1
+            pushcsql(cgn[1], fn)
+        end
     end
 
     # familyname variants
@@ -871,7 +881,7 @@ const rgpyear = "([1-9][0-9][0-9]+)"
 const rgpyearfc = "([1-9][0-9]+)"
 
 # turn of the century
-const rgxtcentury = Regex("([1-9][0-9]?)\\./" * rgpcentury, "i")
+const rgxtcentury = Regex("([1-9][0-9]?)\\.(/| oder )" * rgpcentury, "i")
 
 # quarter
 const rgx1qcentury = Regex("(1\\.|erstes) Viertel +(des )?" * rgpcentury, "i")
@@ -899,14 +909,14 @@ const rgxlatecentury = Regex("spätes " * rgpcentury, "i")
 const rgpmonth = "(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|Jan\\.|Feb\\.|Mrz\\.|Apr\\.|Jun\\.|Jul\\.|Aug\\.|Sep\\.|Okt\\.|Nov\\.|Dez\\.)"
 const rgxbefore = Regex("(vor|bis|spätestens|spät\\.|v\\.)( [1-9][0-9]?\\.)? " * rgpmonth * "? ?" * rgpyear, "i")
 # add 'circa'
-const rgxaround = Regex("(um|circa|ca\\.|wahrscheinlich|wohl|etwa|evtl\\.) " * rgpyear, "i")
+const rgxca = Regex("(circa|ca\\.|wahrscheinlich|wohl|etwa|evtl\\.) " * rgpyear, "i")
+const rgxaround = Regex("(um) " * rgpyear, "i")
 const rgxafter = Regex("(nach|frühestens|seit|ab) " * rgpyear, "i")
 
 const rgxcentury = Regex("^ *" * rgpcentury)
-const rgxyear = Regex("^( *|erwählt *)" * rgpyear)
-const rgxyearfc = Regex("^( *|erwählt *)" * rgpyearfc)
-const stripchars = ['†', '[', ']', ' ', '(', ')']
-const rgxbelegt = r"belegt(.*)"
+const rgxyear = Regex("^( *|erwählt |belegt )" * rgpyear)
+const rgxyearfc = Regex("^( *|erwählt |belegt )" * rgpyearfc)
+const stripchars = ['†', ' ']
 
 """
     parsemaybe(s, Symbol::dir)
@@ -923,13 +933,6 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
         return year
     end
 
-    # strip 'belegt'
-    # prog: use replace instead
-    rgm = match(rgxbelegt, s)
-    if !isnothing(rgm)
-        s = rgm[1]
-    end
-
     # handle special cases
     s = strip(s, stripchars)
 
@@ -937,9 +940,14 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
 
     # turn of the century
     rgm = match(rgxtcentury, s)
-    if !isnothing(rgm) && !isnothing(rgm[2])
-        year = parse(Int, rgm[2])
-        return year * 100
+    if !isnothing(rgm) && !isnothing(rgm[1]) && !isnothing(rgm[3])
+        if dir == :lower
+            century = parse(Int, rgm[1])
+            return year = (century - 1) * 100 + 1
+        elseif dir == :upper
+            century = parse(Int, rgm[3])
+            return year = century * 100 - 1
+        end
     end
 
     # quarter
@@ -1058,6 +1066,17 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
         return year
     end
 
+    rgm = match(rgxca, s)
+    if !isnothing(rgm)
+        year = parse(Int, rgm[2])
+        if dir == :lower
+            year -= 5
+        elseif dir == :upper
+            year += 5
+        end
+        return year
+    end
+
     # century
     rgm = match(rgxcentury, s)
     if !isnothing(rgm) && !isnothing(rgm[1])
@@ -1077,24 +1096,11 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
         return year
     end
 
-    # first century
-    rgm = match(rgxyearfc, s)
-    if !isnothing(rgm) && !isnothing(rgm[2])
-        # unorthodox century date format?
-        rgmi = match(Regex(rgpcentury), s)
-        if isnothing(rgmi)
-            @warn "Could not parse " s
-            return year # missing
-        end
-        @info "First century date " s
-        year = parse(Int, rgm[2])
-        return year
-    end
 
     # handle other special cases
     if strip(s) == "?" return year end
 
-    ssb = strip(s, ['(', ')'])
+    ssb = replace(s, r"\((.+)\)" => s"\1")
     if ssb != s
         return parsemaybe(ssb, dir)
     end
@@ -1141,7 +1147,7 @@ function filltable!(tablename::AbstractString, df::AbstractDataFrame; clear_tabl
         DBInterface.execute(dbwiag, "DELETE FROM " * tablename)
     end
 
-    # CSV returns String31 which is not properly handled by DBInterface
+    # CSV returns String31 which is not properly handled by module DBInterface
     function create_sql_row(row)
         sql_row = collect(row)
         for (i, e) in enumerate(sql_row)
@@ -1155,7 +1161,7 @@ function filltable!(tablename::AbstractString, df::AbstractDataFrame; clear_tabl
 
     # fill database tables with chunks of data for performance reasons
     df_size = size(df, 1)
-    chunk_size = 1000
+    chunk_size = 30
     cols = join(names(df), ",")
     n_cols = length(names(df));
     placeholder_set = "(" * repeat("?,", n_cols - 1) * "?)"
@@ -1216,6 +1222,9 @@ function clean_up!(df::AbstractDataFrame)
             r = strip(x)
             if x == ""
                 r = missing
+            else
+                # replace special whitespaces
+                r = replace(r, "\u00A0" => "\u0020")
             end
         end
         return r
@@ -1255,6 +1264,7 @@ end
 """
     expand_column(df::AbstractDataFrame, col; delim = ',')
 
+Create an extra row for each entry in column `col`.
 """
 function expand_column(df::AbstractDataFrame, col; delim = r", *")
     df_out = empty(df);
@@ -1272,6 +1282,8 @@ end
     fill_name_lookup!(df_dst::AbstractDataFrame, df_src::AbstractDataFrame)
 
 generate combinations of name variants in `df_src` and write them to `df_dst`
+
+Column name for ID: `id` (input), `person_id` (output).
 """
 function create_name_lookup(df::AbstractDataFrame)
     df_dst = DataFrame(person_id = Int[],
@@ -1386,10 +1398,158 @@ function dict_to_array(d::AbstractDict, keys, skip_keys = String[])
         if k in skip_keys
             continue
         end
-        val = isnothing(d[k]) ? missing : d[k]
+        val = isnothing(d[k]) ? missing : strip(d[k])
         push!(r, val)
     end
     return r
+end
+
+struct Date_Regex
+    rgx::Regex
+    part::Int
+    sort::Int
+end
+
+"""
+    c_rgx_sort_cty
+
+regular expressions for dates (century)
+
+structure: regular expression, index of the relevant part, sort key
+"""
+c_rgx_sort_cty = [
+    Date_Regex(rgxtcentury, 1, 850),
+    Date_Regex(rgx1qcentury, 3, 530),
+    Date_Regex(rgx2qcentury, 3, 560),
+    Date_Regex(rgx3qcentury, 3, 580),
+    Date_Regex(rgx4qcentury, 3, 595),
+    Date_Regex(rgx1tcentury, 2, 500),
+    Date_Regex(rgx2tcentury, 2, 570),
+    Date_Regex(rgx3tcentury, 2, 594),
+    Date_Regex(rgx1hcentury, 3, 550),
+    Date_Regex(rgx2hcentury, 3, 590),
+    Date_Regex(Regex("(wohl im )" * rgpcentury), 2, 810),
+    Date_Regex(rgxearlycentury, 1, 555),
+    Date_Regex(rgxlatecentury, 1, 593),
+    Date_Regex(rgxcentury, 1, 800)
+]
+
+"""
+    c_rgx_sort
+
+regular expressions for dates
+
+structure: regular expression, index of the relevant part, sort key
+"""
+c_rgx_sort = [
+    Date_Regex(Regex("(kurz vor|bis kurz vor)([1-9][0-9]?\\.)? " * rgpmonth * "? ?" * rgpyear, "i"), 4, 105),
+    Date_Regex(rgxbefore, 4, 100),
+    Date_Regex(rgxaround, 2, 210),
+    Date_Regex(rgxca, 2, 200),
+    Date_Regex(Regex("(erstmals erwähnt) " * rgpyear, "i"), 2, 110),
+    Date_Regex(Regex("(kurz nach|bald nach) " * rgpyear, "i"), 2, 303),
+    Date_Regex(Regex("(Anfang der )" * rgpyear * "er Jahre"), 2, 305),
+    Date_Regex(rgxafter, 2, 309),
+    Date_Regex(Regex(rgpyear * "er Jahre"), 1, 310),
+    Date_Regex(rgxyear, 2, 150)
+]
+
+"""
+    parse_year_sort(s)
+
+return a value for a year and a sort key
+
+# Examples
+"kurz vor 1200" -> 1200, 105
+"""
+function parse_year_sort(s)
+    year = 9000
+    sort = 900
+
+    if ismissing(s) || strip(s, stripchars) in ("", "?", "unbekannt")
+        return year * 1000 + sort
+    end
+
+    rgm = match(rgxbetween, s)
+    if !isnothing(rgm) && !isnothing(rgm[1]) && !isnothing(rgm[2])
+        year_lower = parse(Int, rgm[1])
+        year_upper = parse(Int, rgm[2])
+        year = div(year_lower + year_upper, 2)
+        if year > 3000
+            @warn "year out of range in " s
+            return 9000900
+        end
+        return  year * 1000 + 150
+    end
+
+    for d in c_rgx_sort_cty
+        rgm = match(d.rgx, s)
+        if !isnothing(rgm) && !isnothing(rgm[d.part])
+            century = parse(Int, rgm[d.part])
+            year = century * 100 - 1;
+            sort = d.sort
+            if year > 3000
+                @warn "year out of range in " s
+                return 9000900
+            end
+            return year * 1000 + sort
+        end
+
+    end
+
+    for d in c_rgx_sort
+        rgm = match(d.rgx, s)
+        if !isnothing(rgm) && !isnothing(rgm[d.part])
+            year = parse(Int, rgm[d.part])
+            sort = d.sort
+            if year > 3000
+                @warn "year out of range in " s
+                return 9000900
+            end
+            return year * 1000 + sort
+        end
+
+    end
+
+    @warn "could not parse " s
+    return year * 1000 + sort
+end
+
+"""
+    get_place(df_place, id, date_start, date_end)
+
+2022-02-28 obsolete?
+"""
+function get_place(df_place, id, date_start, date_end)
+    df_f_id = subset(df_place, :place_id => ByRow(isequal(id)))
+    s = size(df_f_id, 1)
+    if s == 0
+        return missing
+    elseif s == 1
+        return df_f_id[1, :place_name]
+    else
+        date_start, date_end = cp_valid(date_start, date_end)
+        date_cmp = div(date_start + date_end, 2)
+        if !ismissing(date_centre)
+            for row in eachrow(df_id)
+                place_start = row[:num_date_begin]
+                place_end = row[:num_date_end]
+                place_name = row[:place_name]
+                if (!ismissing(place_start) &&
+                    !ismissing(place_end) &&
+                    place_start < date_cmp < place_end)
+                    return place_name
+                elseif !ismissing(place_start) && place_start < date_cmp
+                    return place_name
+                elseif !ismissing(place_end) && date_cmp < place_end
+                    return place_name
+                end
+            end
+        else
+            return df_f_id[1, :place_name]
+        end
+    end
+    return missing
 end
 
 end

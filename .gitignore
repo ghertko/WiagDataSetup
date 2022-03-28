@@ -1,1 +1,6 @@
 /Manifest.toml
+.ipynb_checkpoints
+/run/wiag/.ipynb_checkpoints
+
+# emacs temporary files
+*~
