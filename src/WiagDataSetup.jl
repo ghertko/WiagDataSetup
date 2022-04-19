@@ -7,6 +7,7 @@ using CSV
 using HTTP
 using JSON
 using Base
+using Dates
 
 function cp_valid(a, b)
     ismissing(a) && (a = b)
@@ -929,14 +930,14 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
     end
 
     year = missing
-    if ismissing(s) || s == ""
+    if ismissing(s)
         return year
     end
 
     # handle special cases
     s = strip(s, stripchars)
 
-    if strip(s) == "?" return year end
+    if s == "?" || s == "" return year end
 
     # turn of the century
     rgm = match(rgxtcentury, s)
@@ -1454,13 +1455,14 @@ c_rgx_sort = [
     Date_Regex(rgxyear, 2, 150)
 ]
 
+
 """
     parse_year_sort(s)
 
 return a value for a year and a sort key
 
 # Examples
-"kurz vor 1200" -> 1200, 105
+"kurz vor 1200" -> 1200105
 """
 function parse_year_sort(s)
     year = 9000
@@ -1551,5 +1553,98 @@ function get_place(df_place, id, date_start, date_end)
     end
     return missing
 end
+
+"""
+    insert_sql(file_name, table_name, df::AbstractDataFrame; msg = 2000)
+
+write content of `df` as an SQL INSERT statement for `table_name`
+"""
+function insert_sql(file_name, table_name, df::AbstractDataFrame; msg = 2000)
+    file = open(file_name, "w")
+    println(file, "LOCK TABLES `" * table_name * "` WRITE;")
+
+    col_str = join(string.(names(df)), ", ")
+    println(file, "INSERT INTO " * table_name * " (" * col_str * ") VALUES")
+    size_df_1 = size(df, 1)
+    i = 0
+    for row in eachrow(df)
+        val_line = "(" * join((val_sql(val) for val in row), ", ") * ")"
+        print(file, val_line)
+        i += 1
+        if (i < size_df_1)
+            println(file, ",")
+        else
+            println(file, ";")
+        end
+        if i % msg == 0
+            @info "row " i
+        end
+    end
+
+    println(file, "UNLOCK TABLES;")
+    close(file)
+    return i
+end
+
+"""
+    update_sql(file_name, table_name, df::AbstractDataFrame; on = :id, msg = 2000)
+
+write content of `df` as an SQL INSERT statement for `table_name`
+"""
+function update_sql(file_name, table_name, df::AbstractDataFrame; on = :id, msg = 2000)
+    file = open(file_name, "w")
+    println(file, "LOCK TABLES `" * table_name * "` WRITE;")
+
+    c_col = filter(!isequal(on), Symbol.(names(df)))
+    size_df_1 = size(df, 1)
+    i = 0
+    for row in eachrow(df)
+        c_assignment = String[];
+        for c in c_col
+            a = string(c) * " = " * val_sql(row[c])
+            push!(c_assignment, a)
+        end
+        c_token = ["UPDATE",
+                   table_name,
+                   "SET",
+                   join(c_assignment, ", "),
+                   "WHERE",
+                   string(on) * " = " * val_sql(row[on])]
+        println(file, join(c_token, " ") * ";")
+
+        i += 1
+        if i % msg == 0
+            @info "row " i
+        end
+    end
+
+    println(file, "UNLOCK TABLES;")
+    close(file)
+    return i
+end
+
+function val_sql(val::Real)
+    return string(val)
+end
+
+function val_sql(val::AbstractString)
+    return "'" * val * "'"
+end
+
+function val_sql(val::Missing)
+    return "NULL"
+end
+
+const wiag_date_format = Dates.dateformat"yyyy-mm-dd HH:MM"
+function val_sql(val::DateTime)
+    return "'" * Dates.format(val, wiag_date_format) * "'"
+end
+
+function val_sql(val::Any)
+    return string(val)
+end
+
+
+
 
 end
