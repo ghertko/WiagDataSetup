@@ -1455,21 +1455,27 @@ c_rgx_sort = [
     Date_Regex(rgxyear, 2, 150)
 ]
 
-
 """
     parse_year_sort(s)
 
 return a value for a year and a sort key
 
 # Examples
-"kurz vor 1200" -> 1200105
+"kurz vor 1200" -> 1200105183
 """
 function parse_year_sort(s)
     year = 9000
     sort = 900
+    day = 900
+    # day_middle = 183
+
+    # version for day specific dates
+    # make_key(year, sort, day) = (year * 1000 + sort) * 1000 + day
+    make_key(year, sort) = year * 1000 + sort
+    key_not_found = make_key(9000, 900)
 
     if ismissing(s) || strip(s, stripchars) in ("", "?", "unbekannt")
-        return year * 1000 + sort
+        return make_key(year, sort)
     end
 
     rgm = match(rgxbetween, s)
@@ -1479,9 +1485,9 @@ function parse_year_sort(s)
         year = div(year_lower + year_upper, 2)
         if year > 3000
             @warn "year out of range in " s
-            return 9000900
+            return key_not_found
         end
-        return  year * 1000 + 150
+        return  make_key(year, 150)
     end
 
     for d in c_rgx_sort_cty
@@ -1492,9 +1498,9 @@ function parse_year_sort(s)
             sort = d.sort
             if year > 3000
                 @warn "year out of range in " s
-                return 9000900
+                return key_not_found
             end
-            return year * 1000 + sort
+            return make_key(year, sort)
         end
 
     end
@@ -1506,15 +1512,15 @@ function parse_year_sort(s)
             sort = d.sort
             if year > 3000
                 @warn "year out of range in " s
-                return 9000900
+                return key_not_found
             end
-            return year * 1000 + sort
+            return make_key(year, sort)
         end
 
     end
 
     @warn "could not parse " s
-    return year * 1000 + sort
+    return key_not_found
 end
 
 """
@@ -1635,10 +1641,16 @@ function val_sql(val::Missing)
     return "NULL"
 end
 
-const wiag_date_format = Dates.dateformat"yyyy-mm-dd HH:MM"
+const wiag_date_time_format = Dates.dateformat"yyyy-mm-dd HH:MM"
 function val_sql(val::DateTime)
+    return "'" * Dates.format(val, wiag_date_time_format) * "'"
+end
+
+const wiag_date_format = Dates.dateformat"yyyy-mm-dd"
+function val_sql(val::Date)
     return "'" * Dates.format(val, wiag_date_format) * "'"
 end
+
 
 function val_sql(val::Any)
     return string(val)
