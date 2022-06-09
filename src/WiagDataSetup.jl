@@ -892,8 +892,15 @@ const rgx4qcentury = Regex("(4\\.|viertes) Viertel +(des )?" * rgpcentury, "i")
 
 # begin, middle end
 const rgx1tcentury = Regex("Anfang (des )?" * rgpcentury, "i")
+const rgx1atcentury = Regex("Beginn (des )?" * rgpcentury, "i")
 const rgx2tcentury = Regex("Mitte (des )?" * rgpcentury, "i")
 const rgx3tcentury = Regex("Ende (des )?" * rgpcentury, "i")
+
+# third
+const rgx1trdcentury = Regex("(1\\.|erstes) Drittel +(des )?" * rgpcentury, "i")
+const rgx2trdcentury = Regex("(2\\.|zweites) Drittel +(des )?" * rgpcentury, "i")
+const rgx3trdcentury = Regex("(3\\.|drittes) Drittel +(des )?" * rgpcentury, "i")
+
 
 # half
 const rgx1hcentury = Regex("(1\\.|erste) Hälfte +(des )?" * rgpcentury, "i")
@@ -968,7 +975,7 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
     end
 
     # begin, middle, end
-    rgxq = [rgx1tcentury, rgx2tcentury, rgx3tcentury]
+    rgxq = [rgx1tcentury, rgx1atcentury, rgx2tcentury, rgx3tcentury]
     for (q, rgx) in enumerate(rgxq)
         rgm = match(rgx, s)
         if !isnothing(rgm) && !isnothing(rgm[3])
@@ -1425,8 +1432,12 @@ c_rgx_sort_cty = [
     Date_Regex(rgx3qcentury, 3, 580),
     Date_Regex(rgx4qcentury, 3, 595),
     Date_Regex(rgx1tcentury, 2, 500),
+    Date_Regex(rgx1atcentury, 2, 500),
     Date_Regex(rgx2tcentury, 2, 570),
     Date_Regex(rgx3tcentury, 2, 594),
+    Date_Regex(rgx1trdcentury, 3, 500),
+    Date_Regex(rgx2trdcentury, 3, 570),
+    Date_Regex(rgx3trdcentury, 3, 594),
     Date_Regex(rgx1hcentury, 3, 550),
     Date_Regex(rgx2hcentury, 3, 590),
     Date_Regex(Regex("(wohl im )" * rgpcentury), 2, 810),
@@ -1452,7 +1463,8 @@ c_rgx_sort = [
     Date_Regex(Regex("(Anfang der )" * rgpyear * "er Jahre"), 2, 305),
     Date_Regex(rgxafter, 2, 309),
     Date_Regex(Regex(rgpyear * "er Jahre"), 1, 310),
-    Date_Regex(rgxyear, 2, 150)
+    Date_Regex(rgxyear, 2, 150),
+    Date_Regex(rgxyearfc, 2, 150)
 ]
 
 """
@@ -1474,7 +1486,12 @@ function parse_year_sort(s)
     make_key(year, sort) = year * 1000 + sort
     key_not_found = make_key(9000, 900)
 
-    if ismissing(s) || strip(s, stripchars) in ("", "?", "unbekannt")
+    if ismissing(s)
+        return make_key(year, sort)
+    end
+
+    s = strip(s, stripchars)
+    if s in ("", "?", "unbekannt")
         return make_key(year, sort)
     end
 

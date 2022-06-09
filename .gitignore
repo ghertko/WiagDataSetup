@@ -4,3 +4,6 @@
 
 # emacs temporary files
 *~
+
+# julia libs
+*.so
