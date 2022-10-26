@@ -978,7 +978,7 @@ function parsemaybe(s, dir::Symbol)::Union{Missing, Int}
     rgxq = [rgx1tcentury, rgx1atcentury, rgx2tcentury, rgx3tcentury]
     for (q, rgx) in enumerate(rgxq)
         rgm = match(rgx, s)
-        if !isnothing(rgm) && !isnothing(rgm[3])
+        if !isnothing(rgm) && !isnothing(rgm[2])
             century = parse(Int, rgm[2])
             if dir == :lower
                 year = (century - 1) * 100 + (q - 1) * 33 + 1
@@ -1511,7 +1511,7 @@ function parse_year_sort(s)
         rgm = match(d.rgx, s)
         if !isnothing(rgm) && !isnothing(rgm[d.part])
             century = parse(Int, rgm[d.part])
-            year = century * 100 - 1;
+            year = (century - 1) * 100;
             sort = d.sort
             if year > 3000
                 @warn "year out of range in " s
@@ -1668,12 +1668,12 @@ function val_sql(val::Date)
     return "'" * Dates.format(val, wiag_date_format) * "'"
 end
 
-
 function val_sql(val::Any)
     return string(val)
 end
 
-
-
+function make_id_public(id, num_id_length::Int, id_public_key::AbstractString)
+    return "WIAG-" * id_public_key * "-" * lpad(id, num_id_length, '0') * "-001"
+end
 
 end
