@@ -12,6 +12,7 @@ first(c::DBInterface.Cursor) = iterate(c)[1]
 count table with field item_id
 """
 function count_table(db::MySQL.Connection, table, join_field)
+    global item_type_id
     if join_field in ("item_id", "person_id")
         sql = "SELECT COUNT(*) as n FROM $(table) " *
             "WHERE $(join_field) IN " *
@@ -20,6 +21,7 @@ function count_table(db::MySQL.Connection, table, join_field)
         sql = "SELECT COUNT(*) as n FROM $(table) " *
             "WHERE item_type_id = $(item_type_id)"
     end
+    @info sql
     c = DBInterface.execute(db, sql)
     return first(c)[:n]
 end
@@ -30,6 +32,7 @@ end
 clear table with field item_id
 """
 function clear_table!(db::MySQL.Connection, table, join_field)
+    global item_type_id
     if join_field in ("item_id", "person_id")
         sql = "DELETE FROM $(table) " *
             "WHERE $(join_field) IN " *
@@ -38,6 +41,30 @@ function clear_table!(db::MySQL.Connection, table, join_field)
         sql = "DELETE FROM $(table) " *
             "WHERE item_type_id = $(item_type_id)"
     end
+    c = DBInterface.execute(db, sql)
+    n_row = c.rows_affected
+    @info "Zeilen " n_row
+    n_row
+end
+
+"""
+    clear_item_property!(db, property_type_id)
+
+clear item_property for `property_type_id`
+"""
+function clear_item_property!(db::MySQL.Connection, table, join_field, property_name)
+    global item_type_id
+
+    # get property type id
+    sql = "SELECT id FROM item_property_type " *
+        "WHERE name = '$(property_name)'"
+    c = DBInterface.execute(Wds.dbwiag, sql)
+    property_type_id = first(c)[:id]
+
+    sql = "DELETE FROM $(table) " *
+        "WHERE $(join_field) IN " *
+        "(SELECT id FROM item WHERE item_type_id = $(item_type_id)) " *
+        "AND property_type_id = $(property_type_id)"
     c = DBInterface.execute(db, sql)
     n_row = c.rows_affected
     @info "Zeilen " n_row

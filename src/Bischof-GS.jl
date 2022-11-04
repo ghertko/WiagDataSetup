@@ -1,16 +1,15 @@
 """
 2022-10-24
 update WIAG data in a Jupyter-Notebook
-item type: bishop
+item type: Bischof GS
 preparation
-   log in to a database
-   set datapath
+   read canons from GS first
+   log in to a database (`Wds.dbwiag`)
+   set `data_path` ???
+   set `gs_db`
 """
 
 using Dates
-
-# set item type (bishop); see table item_type
-item_type_id = 4;
 
 
 """
@@ -18,11 +17,16 @@ item_type_id = 4;
 
 insert references into reference_volume
 """
-function insert_reference_volume!(table, source_file)
+function insert_reference_volume!(table, source_table)
     @assert @isdefined(Wds) "'Wds' ist nicht definiert"
 
-    @info "reading " table
-    df = CSV.read(source_file, DataFrame)
+    @info "reading " source_table
+    table_name = gs_db * "." * source_table
+    sql = "SELECT id, titel AS title, autoren AS author, nummer AS number_vol, " *
+        "uri AS online_resource, kurztitel AS shorttitle " *
+        "FROM $(table_name)";
+    df = Wds.sql_df(sql);
+
     Wds.clean_up!(df)
 
     @info "Zeilen, Spalten: " size(df)
@@ -30,20 +34,83 @@ function insert_reference_volume!(table, source_file)
     insertcols!(df, :item_type_id => item_type_id)
 
     columns = [
+        :id => :reference_id,
         :item_type_id => :item_type_id,
-        Symbol("ID_Ref") => :reference_id,
-        Symbol("full_citation") => :full_citation,
-        Symbol("author_editor") => :author_editor,
-        Symbol("OnlineRessource") => :online_resource,
-        Symbol("short_title") => :title_short,
-        Symbol("ri_opac_id") => :ri_opac_id,
-        Symbol("year of publication") => :year_publication,
-        Symbol("ISBN") => :isbn,
-    ];
+        :title => :full_citation,
+        :author => :author_editor,
+        :online_resource => :online_resource,
+        :shorttitle => :title_short,
+        :number_vol => :gs_volume_nr,
+    ]
+
 
     Wds.filltable!(table, select(df, columns));
 
 end
+
+"""
+    gsn(dbwiag_name::String)
+
+retrieve items that are referenced by item_type "Bischof"
+"""
+function gsn(dbwiag_name::String; item_type_bishop = 4)
+
+    table_item_bishop = dbwiag_name * ".item"
+    table_id_external_bishop = dbwiag_name * ".id_external"
+    sql = "SELECT item.id as ep_item_id, e.value AS gsn " *
+        "FROM $(table_item_bishop) " *
+        "JOIN $(table_id_external_bishop) AS e ON item.id = e.item_id " *
+        "WHERE item_type_id = $(item_type_bishop) " *
+        "AND authority_id = 200 " *
+        "AND item.is_online";
+    @info sql
+    return Wds.sql_df(sql);
+end
+
+
+function insert_item!(table,
+                      gsn_table,
+                      items_table,
+                      persons_table,
+                      df_gsn;
+                      user_id = 40)
+
+    gs_gsn_table = gs_db * ".gsn"
+    gs_items_table = gs_db * ".items"
+    gs_persons_table = gs_db * ".persons"
+    sql = "SELECT g.id as gsn_id, item_id, g.nummer, items.status " *
+        "FROM $(gs_gsn_table) AS g " *
+        "JOIN $(gs_items_table) as i ON item_id = i.id " *
+        "AND NOT i.deleted AND i.status = 'online'"
+    df_item = Wds.sql_df(sql)
+
+    # TODO read person.id for item.id_in_source
+
+
+    df_item = innerjoin(df_item, df_gsn, on = :nummer => :gsn)
+
+    select!(df_item, [
+
+    insertcols!(
+        df_item,
+        1,
+        :item_type_id => item_type_id
+        :edit_status => "importiert",
+        :created_by => user_id,
+        :date_created => Dates.now(),
+        :changed_by => user_id,
+        :date_changed => Dates.now(),
+        :id_public => missing,
+        :is_online => 1
+    )
+
+
+
+end
+
+
+
+
 
 """
     insert_item!(source_file;
@@ -53,7 +120,7 @@ end
 
 insert bishop meta data into item
 """
-function insert_item!(table,
+function insert_item_bishop!(table,
                       source_file;
                       online_status = "fertig",
                       id_public_key = "Pers-EPISCGatz",
