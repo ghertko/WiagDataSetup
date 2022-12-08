@@ -1225,17 +1225,17 @@ remove whitespaces
 """
 function clean_up!(df::AbstractDataFrame)
     function pure(x)
-        r = x
         if typeof(x)<:AbstractString
-            r = strip(x)
+            x = strip(x)
+            x = strip(x, '-')
             if x == ""
-                r = missing
+                x = missing
             else
                 # replace special whitespaces
-                r = replace(r, "\u00A0" => "\u0020")
+                x = replace(x, "\u00A0" => "\u0020")
             end
         end
-        return r
+        return x
     end
 
     for col in names(df)

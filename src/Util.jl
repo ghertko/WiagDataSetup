@@ -33,7 +33,7 @@ clear table with field item_id
 """
 function clear_table!(db::MySQL.Connection, table, join_field)
     global item_type_id
-    if join_field in ("item_id", "person_id")
+    if join_field in ("item_id", "person_id", "id")
         sql = "DELETE FROM $(table) " *
             "WHERE $(join_field) IN " *
             "(SELECT id FROM item WHERE item_type_id = $(item_type_id))"

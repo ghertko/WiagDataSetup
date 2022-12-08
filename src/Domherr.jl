@@ -89,8 +89,6 @@ function insert_item!(table,
                       id_public_key = "Pers-CANON",
                       user_id = 40)
 
-    @assert @isdefined(Wds) "'Wds' ist nicht definiert"
-
     columns = [
         :ID_Domherr => :id_in_source,
         :Status => :edit_status,
@@ -122,9 +120,8 @@ function insert_item!(table,
     # return df_item
 
 
-    Wds.filltable!("item", df_item)
+    Wds.filltable!(table, df_item)
 
-    return df_p
 
 end
 
@@ -134,7 +131,6 @@ end
 get IDs from `item` and `religious_order`; insert data into `person`
 """
 function insert_person!(table, df_p::AbstractDataFrame)
-    @assert @isdefined(Wds) "'Wds' ist nicht definiert"
 
     # read ids
     sql = "SELECT id, id_in_source FROM item where item_type_id = ($item_type_id)"
@@ -179,6 +175,8 @@ function insert_person!(table, df_p::AbstractDataFrame)
         :Kommentar_Person => :note_person,
         :religious_order_id => :religious_order_id,
     ]
+
+    # return df_cn
 
     Wds.filltable!(table, select(df_cn, columns))
 
@@ -226,7 +224,7 @@ end
 """
     insert_item_reference!(table, df_p)
 
-inset references into `item_reference`
+insert references into `item_reference`
 """
 function insert_item_reference!(table, df_p)
     @assert @isdefined(Wds) "'Wds' ist nicht definiert"
@@ -317,12 +315,22 @@ end
 """
     insert_id_external(df_p::AbstractDataFrame)
 
-insert into `id_external`
+insert into `id_external`; all authorities except GS
 """
 function insert_id_external!(table, df_p::AbstractDataFrame)
     @assert @isdefined(Wds) "'Wds' ist nicht definiert"
 
     # id in table authority and column name in df_p
+    # +-----+--------------------------------------+
+    # | id  | url_name_formatter                   |
+    # +-----+--------------------------------------+
+    # |   1 | Gemeinsame Normdatei (GND) ID        |
+    # |   2 | Wikidata                             |
+    # |   3 | Wikipedia-Artikel                    |
+    # |   4 | VIAF-ID                              |
+    # |   5 | WIAG-ID                              |
+    # | 200 | Personendatenbank der Germania Sacra |
+    # +-----+--------------------------------------+
     authorities = [
         1 => :GND_ID,
         2 => :Wikidata_ID,
@@ -453,6 +461,19 @@ function insert_id_external_auth!(table, df_p::AbstractDataFrame, auth_id, auth_
     df_id_ext = select(df_p, columns);
     df_id_ext = dropmissing(df_id_ext, :value)
 
+    # some entries contain a complete URL, e.g. for WIAG_ID_Bischof
+    function extract_id_value(data)
+        data = strip(data)
+        val = data
+        if data[1:4] == "http"
+            p_list = split(data, "/")
+            val = p_list[end]
+        end
+        return val
+    end
+
+    transform!(df_id_ext, :value => ByRow(extract_id_value) => :value)
+
     insertcols!(df_id_ext, :authority_id => auth_id)
 
     Wds.filltable!(table, df_id_ext)
@@ -522,7 +543,7 @@ function insert_name_variant!(table, df_p::AbstractDataFrame, col::Symbol)
 
 end
 
-function insert_name_lookup!(table, df_p, col_fn_variant, col_gn_variant)
+function insert_name_lookup!(table, df_p)
     @assert @isdefined(Wds) "'Wds' ist nicht definiert"
 
     # read ids
@@ -536,8 +557,8 @@ function insert_name_lookup!(table, df_p, col_fn_variant, col_gn_variant)
         :Vorname => :givenname,
         :Praefix => :prefix_name,
         :Familienname => :familyname,
-        col_fn_variant => :familyname_variant,
-        col_gn_variant => :givenname_variant,
+        :Familienname_Variante => :familyname_variant,
+        :Vorname_Variante => :givenname_variant,
     ]
 
     df_nl = Wds.create_name_lookup(select(df_p, columns))
