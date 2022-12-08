@@ -918,14 +918,34 @@ function map_sources(table)
 
     select!(df, base_cols)
 
-    # find references dh -> gs
+    # find references dh -> gs and ep -> gs
     # for entries
     # dh; dh gs
-    # dh; dh
+    # ep; dh gs ep (indirect)
+    # ep; gs ep
 
-    df_dh_gs = find_dh_gs();
+    df_dh_gs = find_dh_gs()
+    df_ep_gs = find_ep_gs()
+
     #- drop entries already referenced by bishops
     df_dh_gs = antijoin(df_dh_gs, df, on = :dh_id);
+
+    #- find remaining intersection dh -> gs, ep -> gs
+    #- this set is empty when all bishops are referenced by canons
+    df_gs_double = innerjoin(df_ep_gs, df_dh_gs, on = :gs_id)
+
+    @info "Indirekte Verweise auf Bischöfe durch gemeinsame Verweise auf Domherren GS" df_gs_double
+
+    columns = [
+        :ep_id => :person_id_name,
+        :dh_id => :dh_id,
+        :gs_id => :gs_id,
+        :ep_id => :ep_id,
+    ]
+
+    df = vcat(df, select(df_gs_double, columns))
+
+    df_dh_gs = antijoin(df_dh_gs, df_gs_double, on = :dh_id)
 
     @info "Verweise von Domherren auf Domherren-GS" size(df_dh_gs)
 
@@ -940,33 +960,6 @@ function map_sources(table)
 
     df = vcat(df, df_in)
 
-    #- canons without references to other sources
-    sql = "SELECT id AS dh_id FROM item WHERE item_type_id = 5 AND is_online";
-    df_dh = Wds.sql_df(sql)
-
-    df_dh = antijoin(df_dh, df, on = :dh_id)
-    @info "Restliche Domherren" size(df_dh)
-
-    columns = [
-        :dh_id => :person_id_name,
-        :dh_id => :dh_id,
-    ]
-    df_in = select(df_dh, columns);
-
-    insertcols!(df_in, :gs_id => missing, :ep_id => missing)
-    df = vcat(df, df_in)
-
-    # bishops with references to canons GS
-    # for entries
-    # ep; gs ep
-
-    df_ep_gs = find_ep_gs()
-
-    #- find indirect references via GS
-    # TODO 2022-12-08
-    return df, df_ep_gs
-
-
     df_ep_gs = antijoin(df_ep_gs, df, on = :ep_id, matchmissing = :notequal)
     @info "Restlice Bischöfe mit Verweis auf Domherren GS" size(df_ep_gs)
 
@@ -979,6 +972,25 @@ function map_sources(table)
 
     insertcols!(df_in, :dh_id => missing)
     df = vcat(df, df_in)
+
+    # canons without references to other sources
+    # for entries
+    # dh; dh
+    sql = "SELECT id AS dh_id FROM item WHERE item_type_id = 5 AND is_online";
+    df_dh = Wds.sql_df(sql)
+
+    df_dh = antijoin(df_dh, df, on = :dh_id, matchmissing = :notequal)
+    @info "Restliche Domherren" size(df_dh)
+
+    columns = [
+        :dh_id => :person_id_name,
+        :dh_id => :dh_id,
+    ]
+    df_in = select(df_dh, columns);
+
+    insertcols!(df_in, :gs_id => missing, :ep_id => missing)
+    df = vcat(df, df_in)
+
 
     # canons GS not referenced so far
     # for entries
@@ -997,7 +1009,6 @@ function map_sources(table)
 
     insertcols!(df_in, :dh_id => missing, :ep_id => missing)
     df = vcat(df, df_in)
-
 
     df_stack = DataFrame(person_id_name = Int[], person_id_role = Int[], prio_role = Int[])
     for row in eachrow(df)
