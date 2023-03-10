@@ -3,8 +3,8 @@
 update WIAG data in a Jupyter-Notebook
 item type: Domherr
 preparation
-   log in to a database (`Wds.dbwiag`)
-   set `datapath`
+log in to a database (`Wds.dbwiag`)
+set `datapath`
 """
 
 using Dates
@@ -122,6 +122,72 @@ function insert_item!(table,
 
     Wds.filltable!(table, df_item)
 
+
+end
+
+function update_merge_status!(table, df_p::AbstractDataFrame)
+    # read IDs
+    table = "item";
+    sql = "SELECT id, id_in_source FROM $(table) WHERE item_type_id = $(item_type_id)";
+    df_id_in_source = Wds.sql_df(sql);
+
+    is_valid_id(id) = !ismissing(id) && id != "0"
+
+    columns = [
+        :ID_Domherr,
+        :Vorname,
+        :Familienname,
+        :Merged_Into,
+        :Status
+    ]
+
+    df_merged = subset(select(df_p, columns), :Merged_Into => ByRow(is_valid_id));
+
+    df_merged = leftjoin(df_merged, df_id_in_source, on = :Merged_Into => :id_in_source);
+
+    rename!(df_merged, :id => :merged_into_id);
+
+    df_merged = leftjoin(df_merged, df_id_in_source, on = :ID_Domherr => :id_in_source);
+
+    @info "set merge_status"
+    # child
+    table = "item";
+    sql = "UPDATE $(table) SET merge_status = 'child' WHERE id = ?";
+    updstmt = DBInterface.prepare(Wds.dbwiag, sql);
+
+    c_id_list = unique(df_merged.merged_into_id);
+    for c_id in c_id_list
+        DBInterface.execute(updstmt, c_id)
+    end
+
+    DBInterface.close!(updstmt)
+
+    table = "item";
+    sql = "UPDATE $(table) SET merge_status = 'parent' WHERE id = ?";
+    updstmt = DBInterface.prepare(Wds.dbwiag, sql);
+
+    p_id_list = unique(df_merged.id);
+
+    for p_id in p_id_list
+        DBInterface.execute(updstmt, p_id)
+    end
+
+    DBInterface.close!(updstmt)
+
+    @info "set merge_status"
+
+    table = "item";
+    sql = "UPDATE $(table) SET merged_into_id = ? WHERE id = ?";
+    updstmt = DBInterface.prepare(Wds.dbwiag, sql);
+
+    for row in eachrow(df_merged)
+        set_id_merged_into_id = collect(row[[:merged_into_id, :id]])
+        DBInterface.execute(updstmt, set_id_merged_into_id)
+    end
+
+    DBInterface.close!(updstmt)
+
+    @info "Zahl der zusammengeführten Einträge (parent)", size(df_merged, 1)
 
 end
 
